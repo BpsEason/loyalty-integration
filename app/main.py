@@ -80,6 +80,11 @@ class MixedPaymentRequest(BaseModel):
     order_reference: Optional[str] = None
 
 
+class CouponClaimRequest(BaseModel):
+    customer_id: int
+    code: str = Field(..., description="優惠券代碼")
+
+
 class PointTransactionRequest(BaseModel):
     """通用點數交易建立請求 - 對應 Laravel POST /api/v1/customers/{customer}/point-transactions"""
     type: str = Field(..., description="交易類型: earn, redeem, adjust, etc.")
@@ -230,12 +235,16 @@ async def list_point_transactions(customer_id: int, per_page: int = 15, type: st
 
 
 @app.post("/customers/{customer_id}/point-transactions")
-async def create_point_transaction(customer_id: int, body: PointTransactionRequest):
+async def create_point_transaction(
+    customer_id: int, 
+    body: PointTransactionRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+):
     """建立通用點數交易 - 對應 Laravel POST /api/v1/customers/{customer}/point-transactions"""
     try:
         client = PointClient(laravel_client)
-        # 自動產生 Idempotency-Key，確保重複請求不會重複建立交易
-        key = laravel_client.generate_idempotency_key(prefix="transaction")
+        # 如果外部系統有提供 Idempotency-Key，就使用它；否則自動產生
+        key = idempotency_key or laravel_client.generate_idempotency_key(prefix="transaction")
         return await client.create_transaction(
             customer_id=customer_id,
             type=body.type,
@@ -284,10 +293,14 @@ async def earn_points(body: EarnRequest):
 
 
 @app.post("/points/redeem")
-async def redeem_points(body: RedeemRequest):
+async def redeem_points(
+    body: RedeemRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+):
     try:
         client = PointClient(laravel_client)
-        key = laravel_client.generate_idempotency_key(prefix="redeem")
+        # 如果外部系統有提供 Idempotency-Key，就使用它；否則自動產生
+        key = idempotency_key or laravel_client.generate_idempotency_key(prefix="redeem")
         return await client.redeem(
             customer_id=body.customer_id,
             amount=body.amount,
@@ -350,10 +363,14 @@ async def list_coupon_redemptions(customer_id: int, per_page: int = 15):
 
 
 @app.post("/coupons/redeem")
-async def redeem_coupon(body: CouponRedeemRequest):
+async def redeem_coupon(
+    body: CouponRedeemRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+):
     try:
         client = CouponClient(laravel_client)
-        key = laravel_client.generate_idempotency_key(prefix="coupon-redeem")
+        # 如果外部系統有提供 Idempotency-Key，就使用它；否則自動產生
+        key = idempotency_key or laravel_client.generate_idempotency_key(prefix="coupon-redeem")
         return await client.redeem(
             customer_id=body.customer_id,
             user_coupon_id=body.user_coupon_id,
@@ -367,10 +384,14 @@ async def redeem_coupon(body: CouponRedeemRequest):
 
 
 @app.post("/payments/mixed")
-async def mixed_payment(body: MixedPaymentRequest):
+async def mixed_payment(
+    body: MixedPaymentRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+):
     try:
         client = CouponClient(laravel_client)
-        key = laravel_client.generate_idempotency_key(prefix="mixed")
+        # 如果外部系統有提供 Idempotency-Key，就使用它；否則自動產生
+        key = idempotency_key or laravel_client.generate_idempotency_key(prefix="mixed")
         return await client.mixed_payment(
             customer_id=body.customer_id,
             reference=body.reference,
@@ -378,6 +399,45 @@ async def mixed_payment(body: MixedPaymentRequest):
             user_coupon_id=body.user_coupon_id,
             points_amount=body.points_amount,
             order_reference=body.order_reference,
+            idempotency_key=key,
+        )
+    except LaravelAPIError as e:
+        raise HTTPException(status_code=e.status_code or 400, detail=e.message)
+
+
+@app.post("/customers/{customer_id}/coupons/claim")
+async def claim_coupon(
+    customer_id: int,
+    body: CouponClaimRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+):
+    """領取優惠券 - 對應 Laravel POST /api/v1/customers/{customer}/coupons/claim"""
+    try:
+        client = CouponClient(laravel_client)
+        # 如果外部系統有提供 Idempotency-Key，就使用它；否則自動產生
+        key = idempotency_key or laravel_client.generate_idempotency_key(prefix="coupon-claim")
+        return await client.claim(
+            customer_id=customer_id,
+            code=body.code,
+            idempotency_key=key,
+        )
+    except LaravelAPIError as e:
+        raise HTTPException(status_code=e.status_code or 400, detail=e.message)
+
+
+@app.post("/coupons/claim")
+async def claim_coupon_via_api(
+    body: CouponClaimRequest,
+    idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key")
+):
+    """領取優惠券 - 統一 API 格式"""
+    try:
+        client = CouponClient(laravel_client)
+        # 如果外部系統有提供 Idempotency-Key，就使用它；否則自動產生
+        key = idempotency_key or laravel_client.generate_idempotency_key(prefix="coupon-claim")
+        return await client.claim(
+            customer_id=body.customer_id,
+            code=body.code,
             idempotency_key=key,
         )
     except LaravelAPIError as e:

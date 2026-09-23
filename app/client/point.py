@@ -75,3 +75,8 @@ class PointClient:
             f"/customers/{customer_id}/point-transactions/expiring",
             params={"days": days},
         )
+
+    async def get_transaction(self, customer_id: int, transaction_id: int) -> dict:
+        return await self.client.get(
+            f"/customers/{customer_id}/point-transactions/{transaction_id}"
+        )

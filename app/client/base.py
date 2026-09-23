@@ -66,6 +66,28 @@ class LaravelClient:
         console.print(f"[green]✓ Login successful[/green] as {email}")
         return token_data
 
+    async def me(self) -> dict:
+        """取得目前登入的使用者資訊"""
+        return await self.get("/auth/me")
+
+    async def refresh(self) -> dict:
+        """刷新 JWT Token"""
+        resp = await self.post("/auth/refresh")
+        # 更新本機儲存的 token - 遵循 Laravel 標準 API 回傳格式
+        if "data" in resp and "access_token" in resp["data"]:
+            self._token = resp["data"]["access_token"]
+            self._token_type = resp["data"].get("token_type", "Bearer")
+        return resp
+
+    async def logout(self) -> dict:
+        """登出並清除本機 token"""
+        try:
+            resp = await self.post("/auth/logout")
+        finally:
+            # 無論 API 呼叫是否成功，都清除本機 token
+            self._token = None
+        return resp
+
     def set_token(self, token: str, token_type: str = "Bearer"):
         self._token = token
         self._token_type = token_type

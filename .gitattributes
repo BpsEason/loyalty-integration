@@ -1,0 +1,96 @@
+```gitattributes
+# ================================
+# Line Endings
+# ================================
+
+# All text files use LF
+* text=auto eol=lf
+
+# Python
+*.py text eol=lf
+*.pyw text eol=lf
+*.pyi text eol=lf
+
+# Configuration
+*.json text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf
+*.toml text eol=lf
+*.ini text eol=lf
+*.cfg text eol=lf
+*.conf text eol=lf
+*.env text eol=lf
+
+# Documentation
+*.md text eol=lf
+*.txt text eol=lf
+*.rst text eol=lf
+
+# Web
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.ts text eol=lf
+
+# Shell
+*.sh text eol=lf
+
+# SQL
+*.sql text eol=lf
+
+# ================================
+# Binary Files
+# ================================
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.ico binary
+*.bmp binary
+
+*.pdf binary
+
+*.zip binary
+*.tar binary
+*.gz binary
+*.7z binary
+
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.otf binary
+
+# ================================
+# Project / Git
+# ================================
+
+.gitattributes text eol=lf
+.gitignore text eol=lf
+```
+
+你的 Python 專案核心就是這一行：
+
+```gitattributes
+* text=auto eol=lf
+```
+
+搭配你 VS Code 的：
+
+```json
+"files.eol": "\n"
+```
+
+就可以確保：
+
+**VS Code → LF → Git → LF**
+
+如果你目前 Git 裡已經有一些檔案是 CRLF，再執行：
+
+```bash
+git add --renormalize .
+git status
+```
+
+確認變更後再 commit。

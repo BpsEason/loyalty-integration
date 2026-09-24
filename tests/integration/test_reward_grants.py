@@ -1,13 +1,13 @@
 import asyncio
-import os
 import pytest
 from app.client.base import LaravelClient, LaravelAPIError
+from app.config import settings
 from app.client.reward import RewardClient
 
 
 def _coffee_credentials() -> tuple[str, str]:
-    email = os.getenv("LARAVEL_COFFEE_EMAIL")
-    password = os.getenv("LARAVEL_COFFEE_PASSWORD")
+    email = settings.laravel_coffee_email
+    password = settings.laravel_coffee_password
     if not email or not password:
         pytest.fail(
             "LARAVEL_COFFEE_EMAIL and LARAVEL_COFFEE_PASSWORD are required "

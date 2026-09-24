@@ -33,6 +33,10 @@ class PointClient:
         reference: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
+        """
+        建立點數交易。
+        Idempotency-Key 原樣傳遞給 Laravel，由 Laravel 負責冪等處理。
+        """
         payload = {
             "type": transaction_type,
             "amount": amount,
@@ -46,6 +50,7 @@ class PointClient:
             f"/customers/{customer_id}/point-transactions",
             json=payload,
             idempotency_key=idempotency_key,
+            # 201：首次建立成功；200：相同 Idempotency-Key 的重複請求回傳既有結果。
             expect_status=[201, 200],
         )
 

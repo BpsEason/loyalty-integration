@@ -56,9 +56,14 @@ class LaravelClient:
                     "/auth/login",
                     json={"email": email, "password": password},
                 )
+        except httpx.TimeoutException as exc:
+            raise LaravelAPIError(
+                message=f"Laravel API timeout: {exc}",
+                status_code=504,
+            ) from exc
         except httpx.RequestError as exc:
             raise LaravelAPIError(
-                message=f"Laravel API request failed: {exc}",
+                message=f"Laravel API connection failed: {exc}",
                 status_code=502,
             ) from exc
 
@@ -99,7 +104,7 @@ class LaravelClient:
         try:
             resp = await self.post("/auth/logout")
         finally:
-            # 無論 API 呼叫是否成功，都清除本機 token
+            # 無論遠端 logout 是否成功，都清除本機 token state。
             self._token = None
         return resp
 
@@ -120,6 +125,8 @@ class LaravelClient:
         idempotency_key: str | None = None,
         expect_status: int | list[int] | None = None,
     ) -> dict:
+        # 刻意在送出 request 前拒絕未認證請求，
+        # 避免明知缺少 Authentication Context 仍呼叫 Laravel API。
         if self._token is None:
             raise LaravelAPIError(
                 "Not authenticated. Call login() first.",
@@ -139,9 +146,16 @@ class LaravelClient:
                     params=params,
                     headers=headers,
                 )
+        except httpx.TimeoutException as exc:
+            # Timeout 不代表 Laravel 一定沒有完成 Mutation；
+            # 呼叫端應透過 Idempotency-Key 保護可安全重試的請求。
+            raise LaravelAPIError(
+                message=f"Laravel API timeout: {exc}",
+                status_code=504,
+            ) from exc
         except httpx.RequestError as exc:
             raise LaravelAPIError(
-                message=f"Laravel API request failed: {exc}",
+                message=f"Laravel API connection failed: {exc}",
                 status_code=502,
             ) from exc
 

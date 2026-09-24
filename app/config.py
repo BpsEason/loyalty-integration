@@ -7,6 +7,8 @@ class Settings(BaseSettings):
     laravel_api_base_url: str = "http://localhost:8088/api/v1"
     laravel_email: str | None = None
     laravel_password: str | None = None
+    laravel_coffee_email: str | None = None
+    laravel_coffee_password: str | None = None
 
     default_timeout: float = 30.0
 

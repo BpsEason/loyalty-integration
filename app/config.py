@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     laravel_password: str | None = None
     laravel_coffee_email: str | None = None
     laravel_coffee_password: str | None = None
+    laravel_coffee_campaign_reward_id: int = 1
 
     default_timeout: float = 30.0
 

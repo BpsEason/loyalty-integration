@@ -276,22 +276,18 @@ loyalty-integration/
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py
-│   ├── find_valid_campaigns.py
 │   │
 │   ├── unit/
 │   │   └── test_client_auth.py
 │   │
 │   └── integration/
-│       ├── test_client_verification.py
-│       ├── test_coupon*.py
-│       ├── test_customer_*.py
-│       ├── test_idempotency.py
-│       ├── test_login.py
-│       ├── test_mixed_payment.py
-│       ├── test_point_*.py
-│       ├── test_pos_checkout.py
 │       ├── test_reward_grants.py
-│       └── test_simple_idempotency.py
+│       └── test_point_transaction_create.py
+│
+├── scripts/
+│   └── integration/
+│       ├── explore_*.py
+│       └── explore_valid_campaigns.py
 │
 ├── list_all_routes.py
 ├── verify_routes.py
@@ -1199,20 +1195,17 @@ python -m pytest -q -m "not integration"
 
 需要實際 Laravel API。
 
-涵蓋：
+正式 pytest 目前涵蓋：
 
-* Authentication
-* Customer API
 * Point API
 * Point Transaction
 * Idempotency
-* Coupon API
-* Coupon Claim
-* Coupon Redemption
 * Reward Grant
-* POS Checkout
-* Mixed Payment
-* Client Integration
+* Validation
+* Customer lookup fixture
+
+`scripts/integration/explore_*.py` 是開發用探索腳本，不屬於 pytest suite，
+也不納入 CI 的正式 pass/fail 結果。
 
 執行：
 
@@ -1229,8 +1222,20 @@ python -m pytest tests/integration/test_reward_grants.py -q -m integration
 指定 Test Function：
 
 ```bash
-python -m pytest tests/integration/test_reward_grants.py::test_1_list_reward_grants -q -m integration
+python -m pytest tests/integration/test_reward_grants.py::test_list_reward_grants_returns_response -q -m integration
 ```
+
+目前尚未納入正式 pytest coverage 的項目包括 Authentication API、Coupon API、
+POS Checkout、Mixed Payment 與 Customer API 行為；對應探索腳本仍保留於
+`scripts/integration/`。
+
+已知缺口：
+
+* POS Checkout Partial Failure：尚未有穩定資料建立 Earn 成功、Redeem 失敗情境。
+* Reward Mutation：需要尚未領取指定 reward 的 customer fixture；目前 demo tenant
+      的 reward 可能已全部發放，因此相關 mutation tests 會 skip。
+* Reward 不同 Idempotency-Key：需要兩組可發放的 customer/reward fixture。
+* Tenant Isolation：需要兩個 tenant credentials 與 contract-defined 403/404 資料。
 
 ---
 
@@ -1437,6 +1442,7 @@ LARAVEL_PASSWORD=
 ```env
 LARAVEL_COFFEE_EMAIL=
 LARAVEL_COFFEE_PASSWORD=
+LARAVEL_COFFEE_CAMPAIGN_REWARD_ID=1  # optional; defaults to 1 for the demo data
 ```
 
 執行：

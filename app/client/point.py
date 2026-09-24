@@ -14,11 +14,11 @@ class PointClient:
         self,
         customer_id: int,
         per_page: int = 15,
-        type: str | None = None,
+        transaction_type: str | None = None,
     ) -> dict:
         params: dict = {"per_page": per_page}
-        if type:
-            params["type"] = type
+        if transaction_type:
+            params["type"] = transaction_type
         return await self.client.get(
             f"/customers/{customer_id}/point-transactions",
             params=params,
@@ -27,14 +27,14 @@ class PointClient:
     async def create_transaction(
         self,
         customer_id: int,
-        type: str,
+        transaction_type: str,
         amount: int,
         description: str | None = None,
         reference: str | None = None,
         idempotency_key: str | None = None,
     ) -> dict:
         payload = {
-            "type": type,
+            "type": transaction_type,
             "amount": amount,
         }
         if description:

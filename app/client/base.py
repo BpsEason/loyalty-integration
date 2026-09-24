@@ -45,16 +45,26 @@ class LaravelClient:
         email = email or settings.laravel_email
         password = password or settings.laravel_password
 
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
-            resp = await client.post(
-                "/auth/login",
-                json={"email": email, "password": password},
-            )
-
-        data = resp.json()
-        if resp.status_code != 200 or not data.get("success"):
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+                resp = await client.post(
+                    "/auth/login",
+                    json={"email": email, "password": password},
+                )
+        except httpx.RequestError as exc:
             raise LaravelAPIError(
-                message=data.get("message", "Login failed"),
+                message=f"Laravel API request failed: {exc}",
+                status_code=502,
+            ) from exc
+
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {"raw": resp.text}
+
+        if resp.status_code != 200 or not isinstance(data, dict) or not data.get("success"):
+            raise LaravelAPIError(
+                message=data.get("message", "Login failed") if isinstance(data, dict) else "Login failed",
                 status_code=resp.status_code,
                 payload=data,
             )
@@ -106,20 +116,29 @@ class LaravelClient:
         expect_status: int | list[int] | None = None,
     ) -> dict:
         if self._token is None:
-            raise LaravelAPIError("Not authenticated. Call login() first.")
+            raise LaravelAPIError(
+                "Not authenticated. Call login() first.",
+                status_code=401,
+            )
 
         headers = self.headers.copy()
         if idempotency_key:
             headers["Idempotency-Key"] = idempotency_key
 
-        async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
-            resp = await client.request(
-                method=method.upper(),
-                url=path,
-                json=json,
-                params=params,
-                headers=headers,
-            )
+        try:
+            async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
+                resp = await client.request(
+                    method=method.upper(),
+                    url=path,
+                    json=json,
+                    params=params,
+                    headers=headers,
+                )
+        except httpx.RequestError as exc:
+            raise LaravelAPIError(
+                message=f"Laravel API request failed: {exc}",
+                status_code=502,
+            ) from exc
 
         try:
             data = resp.json()

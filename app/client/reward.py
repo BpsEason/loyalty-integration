@@ -37,5 +37,5 @@ class RewardClient:
             f"/customers/{customer_id}/rewards/grant",
             json=payload,
             idempotency_key=idempotency_key,
-            expect_status=[201, 200, 400],
+            expect_status=[201, 200],
         )

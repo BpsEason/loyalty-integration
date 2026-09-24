@@ -43,7 +43,7 @@ async def main():
     try:
         result1 = await point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",
+            transaction_type="earn",
             amount=100,
             description="Simple idempotency test",
             reference="SIMPLE-TEST-001",
@@ -63,7 +63,7 @@ async def main():
     try:
         result2 = await point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",
+            transaction_type="earn",
             amount=100,
             description="Simple idempotency test",
             reference="SIMPLE-TEST-001",
@@ -93,7 +93,7 @@ async def main():
     try:
         result3 = await point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",
+            transaction_type="earn",
             amount=200,
             description="Another test with different key",
             reference="ANOTHER-TEST-001",

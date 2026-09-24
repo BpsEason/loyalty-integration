@@ -19,6 +19,12 @@ Python 外部整合系統，用於驗證與演示 **Multi-Tenant Loyalty Platfor
 * FastAPI Integration Layer
 * Swagger / ReDoc API 文件
 
+### Known Limitations
+
+* production 使用單一 shared `LaravelClient` 與 JWT token；`/auth/login`、`/auth/refresh`、`/auth/logout` 會改變整個 integration process 的 token，不是每個呼叫者各自的 session。因此目前適合單一 Laravel service account，不代表已完成多使用者 authentication isolation。
+* `POSCheckoutWorkflow` 會依序執行查詢、earn、redeem；目前 endpoint 沒有接收 workflow-level `Idempotency-Key`，也沒有跨 API 的補償交易。重送 workflow 可能再次執行子交易，呼叫端應自行避免重送或使用直接的 domain endpoint。
+* Laravel business rules、tenant isolation、rate limit 與資料一致性由外部 Laravel API 決定；Python layer 不會自行 retry、refresh token 或模擬資料庫 rollback。
+
 > 設計原則：Python 只負責「決策與編排」，所有點數與優惠券的一致性、交易鎖定、FIFO、餘額計算、Coupon 狀態及 Idempotency 皆由 Laravel Loyalty Platform 負責。
 
 ---
@@ -191,18 +197,20 @@ LaravelClient()
 
 # 安裝與環境
 
-目前 `requirements.txt` 定義的是 runtime dependency 的最低版本：
+目前 `requirements.txt` 使用 exact pins，runtime 與 test dependency 都由同一份檔案管理：
 
 * Python 3.10+
-* FastAPI `>=0.141.0`
-* Uvicorn `>=0.53.0`
-* HTTPX `>=0.28.0`
-* Pydantic `>=2.13.0`
-* Pydantic Settings `>=2.15.0`
-* python-dotenv `>=1.2.0`
-* Rich `>=15.0.0`
+* FastAPI `0.141.1`
+* Uvicorn `0.53.0`
+* HTTPX `0.28.1`
+* Pydantic `2.13.5`
+* Pydantic Settings `2.15.0`
+* python-dotenv `1.2.3`
+* Rich `15.0.0`
+* pytest `9.1.1`
+* pytest-asyncio `1.4.0`
 
-測試命令另外需要 pytest 與 pytest-asyncio；它們目前存在於本次驗證所使用的虛擬環境，但未列在目前的 `requirements.txt` runtime 清單中。
+測試依賴已列在 `requirements.txt`，不需要另外安裝。
 
 ```bash
 python -m venv venv
@@ -211,7 +219,6 @@ python -m venv venv
 venv\Scripts\Activate.ps1
 
 pip install -r requirements.txt
-pip install pytest pytest-asyncio
 ```
 
 本次驗證環境的實際版本為：FastAPI `0.141.1`、Pydantic `2.13.5`、HTTPX `0.28.1`、pytest `9.1.1`、pytest-asyncio `1.4.0`。這些是本次環境輸出，不代表 requirements 的 pinned version。
@@ -290,7 +297,7 @@ python -m pytest -q
 
 `--collect-only` 只確認測試是否被 pytest 完整收集，不會執行 Laravel API request；`pytest` 才會執行目前測試 suite。pytest 設定使用 `asyncio_mode = auto`，目前 collection 包含 `tests/test_point_transaction_create.py` 的 5 個測試與 `tests/test_reward_grants.py` 的 7 個測試。
 
-本次實際結果：`12 passed, 1 warning in 15.43s`。warning 是 FastAPI/Starlette TestClient 對目前 HTTPX 使用方式的 deprecation warning，不影響本次 exit code。`tests/` 中其他 `test_*.py` 是 standalone integration scripts，並不會因為 `pytest` collection 自動納入本次 12 個測試。
+本次實際結果：`12 passed, 2 warnings in 15.61s`。warning 是 FastAPI/Starlette TestClient 對目前 HTTPX 與 AnyIO 使用方式的 deprecation warning，不影響本次 exit code。`tests/` 中其他 `test_*.py` 是 standalone integration scripts，並不會因為 `pytest` collection 自動納入本次 12 個測試。
 
 ---
 
@@ -389,7 +396,7 @@ python tests/test_client_verification.py
 * README 提供 regression verification 方法
 * README 說明重構內容
 
-本次可判定為通過的項目包括 import、factory、route inventory、TestClient/lifespan/authentication，以及 12 個 pytest 測試。`debug_router_registration.py` 目前在最後列印 included route 時會因 `_IncludedRouter` 沒有 `path` 屬性而失敗，因此不列為通過的 acceptance check；它不影響 `verify_routes.py` 與 `list_all_routes.py` 的 route 結果。
+本次可判定為通過的項目包括 import、factory、route inventory、TestClient/lifespan/authentication，以及 12 個 pytest 測試。`verify_routes.py` 會檢查關鍵路徑與 HTTP method，發現 mismatch 時以非零 exit code 結束；`list_all_routes.py` 則是完整 route inventory 與人工診斷輸出，不取代 business API 測試。
 
 ---
 
@@ -524,13 +531,13 @@ Token: eyJ0eXAiOiJKV1QiLCJhbGci...
 ## 啟動服務
 
 ```bash
-uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-啟動後：
+上方才是要輸入終端機的命令。服務成功啟動後，Uvicorn 會輸出類似以下訊息；這段文字是啟動結果，不要再貼回終端機執行：
 
 ```text
-Uvicorn running on http://0.0.0.0:8000
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
 ```
 
 FastAPI 啟動時會透過 Laravel API 進行 JWT Login，之後由 Integration Layer 使用取得的 Token 呼叫 Laravel API。
@@ -571,8 +578,8 @@ FastAPI 啟動時會透過 Laravel API 進行 JWT Login，之後由 Integration 
 | GET    | `/customers/{customer_id}/coupons`                         | 查詢優惠券            |
 | GET    | `/customers/{customer_id}/coupons/{user_coupon_id}`         | 查詢單張優惠券         |
 | POST   | `/customers/{customer_id}/coupons/claim`                   | 領取優惠券            |
-| GET    | `/customers/{customer_id}/coupon-redemptions`              | 查詢優惠券核銷紀錄        |
 | POST   | `/coupons/claim`                                            | 以 request body 領券    |
+| GET    | `/customers/{customer_id}/coupon-redemptions`              | 查詢優惠券核銷紀錄        |
 | POST   | `/coupons/redeem`                                           | 核銷優惠券            |
 | POST   | `/payments/mixed`                                           | 混合支付             |
 | GET    | `/customers/{customer_id}/reward-grants`                   | 查詢 Reward Grants |
@@ -646,8 +653,9 @@ FastAPI Integration Layer 提供：
 ```text
 GET  /customers/{customer_id}/coupons
 POST /customers/{customer_id}/coupons/claim
-POST /customers/{customer_id}/coupons/{user_coupon_id}/redeem
 GET  /customers/{customer_id}/coupon-redemptions
+POST /coupons/redeem
+POST /payments/mixed
 ```
 
 Coupon Claim 同樣支援外部：
@@ -1015,7 +1023,7 @@ Customer
 ```text
 GET  /customers/{customer_id}/coupons
 POST /customers/{customer_id}/coupons/claim
-POST /customers/{customer_id}/coupons/{user_coupon_id}/redeem
+POST /coupons/redeem
 ```
 
 ### 8. 演示 Reward Grant

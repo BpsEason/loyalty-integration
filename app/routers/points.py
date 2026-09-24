@@ -21,7 +21,7 @@ async def list_point_transactions(
 ):
     client = PointClient(laravel_client)
     return await client.list_transactions(
-        customer_id, per_page=per_page, type=type
+        customer_id, per_page=per_page, transaction_type=type
     )
 
 
@@ -35,7 +35,7 @@ async def create_point_transaction(
     key = idempotency_key or laravel_client.generate_idempotency_key(prefix="transaction")
     return await client.create_transaction(
         customer_id=customer_id,
-        type=body.type,
+        transaction_type=body.type,
         amount=body.amount,
         description=body.description,
         reference=body.reference,
@@ -64,7 +64,7 @@ async def earn_points(
     key = idempotency_key or laravel_client.generate_idempotency_key(prefix="earn")
     return await client.create_transaction(
         customer_id=body.customer_id,
-        type="earn",
+        transaction_type="earn",
         amount=body.amount,
         description=body.description,
         reference=body.reference,

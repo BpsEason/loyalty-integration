@@ -52,7 +52,7 @@ async def test_1_create_transaction():
     try:
         result = await point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",
+            transaction_type="earn",
             amount=100,
             description="Test 1 - 正常建立交易",
             reference="TEST-001",
@@ -122,7 +122,7 @@ async def test_2_same_idempotency_key(customer_id: int):
     try:
         result1 = await point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",  # 使用 earn 避免餘額不足，方便測試
+            transaction_type="earn",  # 使用 earn 避免餘額不足，方便測試
             amount=50,
             description="Idempotency 測試 - 第一次",
             reference="REPEAT-TEST-001",
@@ -144,7 +144,7 @@ async def test_2_same_idempotency_key(customer_id: int):
     try:
         result2 = await point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",  # 必須與第一次相同
+            transaction_type="earn",  # 必須與第一次相同
             amount=50,   # 必須與第一次相同
             description="Idempotency 測試 - 第一次",  # 必須與第一次完全相同
             reference="REPEAT-TEST-001",  # 必須與第一次完全相同
@@ -204,7 +204,7 @@ async def test_3_different_idempotency_keys(customer_id: int):
     key_a = "test-key-A-" + client.generate_idempotency_key(prefix="a")
     result_a = await point_client.create_transaction(
         customer_id=customer_id,
-        type="earn",
+        transaction_type="earn",
         amount=200,
         description="Key A 測試",
         reference="KEY-A-001",
@@ -216,7 +216,7 @@ async def test_3_different_idempotency_keys(customer_id: int):
     key_b = "test-key-B-" + client.generate_idempotency_key(prefix="b")
     result_b = await point_client.create_transaction(
         customer_id=customer_id,
-        type="earn",
+        transaction_type="earn",
         amount=300,
         description="Key B 測試",
         reference="KEY-B-001",
@@ -258,7 +258,7 @@ async def test_4_validation_error(customer_id: int):
     try:
         await point_client.create_transaction(
             customer_id=customer_id,
-            type="",  # 空的 type
+            transaction_type="",  # 空的 type
             amount=100,
         )
         console.print("[red]✗ 不應該接受空的 type[/red]")
@@ -269,7 +269,7 @@ async def test_4_validation_error(customer_id: int):
     try:
         await point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",
+            transaction_type="earn",
             amount=-50,  # 負數金額
         )
         console.print("[red]✗ 不應該接受負數金額[/red]")
@@ -290,7 +290,7 @@ async def test_5_unauthorized():
     try:
         await point_client.create_transaction(
             customer_id=1,
-            type="earn",
+            transaction_type="earn",
             amount=100,
         )
         console.print("[red]✗ 未授權的請求不應該成功[/red]")

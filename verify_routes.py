@@ -1,4 +1,3 @@
-from fastapi.routing import APIRoute
 from app.main import create_app
 
 
@@ -22,32 +21,45 @@ def main():
     print(f"\n總共路由數量: {len(all_routes)}")
 
     # 驗證關鍵路徑是否存在（與原本設計一致）
-    expected = [
-        "/customers/{customer_id}/points",
-        "/customers/{customer_id}/point-transactions",
-        "/customers/{customer_id}/point-transactions/expiring",
-        "/customers/{customer_id}/point-transactions/{transaction_id}",
-        "/points/earn",
-        "/points/redeem",
-        "/customers/{customer_id}/coupons",
-        "/customers/{customer_id}/coupons/{user_coupon_id}",
-        "/customers/{customer_id}/coupon-redemptions",
-        "/coupons/redeem",
-        "/payments/mixed",
-        "/customers/{customer_id}/coupons/claim",
-        "/customers/{customer_id}/reward-grants",
-        "/customers/{customer_id}/rewards/grant",
-        "/workflows/pos-checkout",
-        "/auth/login",
-        "/health",
-        "/",
-    ]
+    expected = {
+        "/customers/{customer_id}/points": {"GET"},
+        "/customers/{customer_id}/point-transactions": {"GET", "POST"},
+        "/customers/{customer_id}/point-transactions/expiring": {"GET"},
+        "/customers/{customer_id}/point-transactions/{transaction_id}": {"GET"},
+        "/points/earn": {"POST"},
+        "/points/redeem": {"POST"},
+        "/customers/{customer_id}/coupons": {"GET"},
+        "/customers/{customer_id}/coupons/{user_coupon_id}": {"GET"},
+        "/customers/{customer_id}/coupon-redemptions": {"GET"},
+        "/coupons/redeem": {"POST"},
+        "/payments/mixed": {"POST"},
+        "/customers/{customer_id}/coupons/claim": {"POST"},
+        "/coupons/claim": {"POST"},
+        "/customers/{customer_id}/reward-grants": {"GET"},
+        "/customers/{customer_id}/rewards/grant": {"POST"},
+        "/workflows/pos-checkout": {"POST"},
+        "/auth/login": {"POST"},
+        "/auth/me": {"GET"},
+        "/auth/refresh": {"POST"},
+        "/auth/logout": {"POST"},
+        "/health": {"GET"},
+        "/": {"GET"},
+    }
 
     print("\n=== 關鍵路由驗證 ===")
-    paths = {p for p, _, _ in all_routes}
-    for p in expected:
-        status = "✓" if p in paths else "✗"
-        print(f"  {status} {p}")
+    actual: dict[str, set[str]] = {}
+    for path, methods, _ in all_routes:
+        actual.setdefault(path, set()).update(methods)
+    failures = []
+    for path, methods in expected.items():
+        actual_methods = actual.get(path, set())
+        status = "✓" if actual_methods == methods else "✗"
+        print(f"  {status} {sorted(methods)} {path}")
+        if actual_methods != methods:
+            failures.append((path, methods, actual_methods))
+
+    if failures:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

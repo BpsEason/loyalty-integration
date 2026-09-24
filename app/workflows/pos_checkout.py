@@ -54,7 +54,7 @@ class POSCheckoutWorkflow:
         earn_key = self.client.generate_idempotency_key(prefix="earn")
         earn_result = await self.point_client.create_transaction(
             customer_id=customer_id,
-            type="earn",
+            transaction_type="earn",
             amount=earn_amount,
             description=f"POS 消費發點 - {order_reference}",
             reference=order_reference,

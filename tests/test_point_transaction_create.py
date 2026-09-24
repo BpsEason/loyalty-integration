@@ -116,7 +116,7 @@ async def test_2_same_idempotency_key(customer_id: int):
     console.print(f"重複請求前餘額: {balance1}")
     
     # 使用同一個 Idempotency-Key
-    same_key = "test-repeat-001-unique"
+    same_key = client.generate_idempotency_key(prefix="test-repeat")
     
     # 第一次請求
     try:

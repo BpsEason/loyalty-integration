@@ -1,0 +1,16 @@
+# Runtime: FastAPI application and Laravel API integration
+fastapi==0.141.1
+uvicorn==0.53.0
+httpx==0.28.1
+
+# Runtime: request validation and environment settings
+pydantic==2.13.5
+pydantic-settings==2.15.0
+python-dotenv==1.2.3
+
+# Runtime: CLI output used by the application and integration scripts
+rich==15.0.0
+
+# Test and development: async pytest suite and FastAPI TestClient
+pytest==9.1.1
+pytest-asyncio==1.4.0

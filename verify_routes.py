@@ -1,3 +1,14 @@
+"""
+Route Contract Verification.
+
+只驗證 FastAPI 最終註冊的 route path 與 HTTP method。
+不啟動 application lifespan，也不呼叫 Laravel API。
+
+用途：
+- CI route regression detection
+- Local API contract verification
+"""
+
 from app.main import create_app
 
 

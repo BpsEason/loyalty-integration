@@ -12,8 +12,16 @@ console = Console()
 
 class POSCheckoutWorkflow:
     """
-    模擬 POS 結帳流程：
-    識別會員 → 查餘額 → 消費發點 → 兌換點數 → 再查餘額
+    模擬 POS 結帳流程：識別會員 → 查餘額 → 消費發點 → 兌換點數 → 再查餘額。
+
+    Workflow 層級目前不提供 End-to-End Idempotency。每個 mutation operation
+    都使用自己的 Idempotency-Key，由 Laravel 負責該 mutation 的冪等處理。
+    因此 Workflow 重試時，各步驟可能取得新的 key；若 Earn 已成功而 Redeem
+    失敗，重新執行可能再次執行 Earn。本 Workflow 不自行 rollback 或 compensation，
+    Workflow failure 也不代表先前的 mutation 沒有在 Laravel 生效。
+
+    若未來需要 End-to-End Idempotency，應由呼叫端提供穩定的 Workflow key，
+    或由 Laravel 提供 Atomic Composite Checkout API。
     """
 
     def __init__(self, client: LaravelClient):

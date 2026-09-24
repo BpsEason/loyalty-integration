@@ -568,6 +568,26 @@ Laravel Handles Idempotency
 
 而不是自行建立 Idempotency State。
 
+如果呼叫端提供穩定的 `Idempotency-Key`，Integration Layer 會將它傳遞給
+Laravel，讓 Laravel 在重試時識別相同的 Mutation。若呼叫端沒有提供 key，
+Integration Layer 只會為當次 request 自動產生一個 key：
+
+```text
+Request #1       → generated-key-A
+Later retry      → generated-key-B
+```
+
+自動產生的 key 不會跨 request 持久化，因此只保護當次 request，不能提供跨重試的
+End-to-End Idempotency。需要安全重試時，呼叫端必須提供穩定的 key。
+
+這裡的 Idempotency 是 **Step-level Idempotency**：Laravel 可以處理同一個
+Mutation 的重複 Request，但目前 POS Checkout Workflow 不提供
+**End-to-End Idempotency**。Workflow 中的每個 Mutation Step 仍可能使用不同的
+Idempotency-Key。
+
+`order_reference` 是 Business / Trace Reference；`Idempotency-Key` 是 Duplicate
+Mutation Protection。兩者維持不同責任，不互相取代。
+
 架構：
 
 ```text
@@ -772,8 +792,43 @@ FastAPI 不會假設自己可以安全地 Rollback 前面的 Laravel Operation�
 1. 回傳明確 Workflow Failure。
 2. 不在 FastAPI 建立第二套 Transaction System。
 3. 不維護第二套 Loyalty State。
-4. 依賴 Laravel Idempotency 保護可安全重試的 Mutation。
+4. 依賴 Laravel Idempotency 保護單一步驟的重複 Mutation；目前 Workflow 本身不保證 End-to-End Idempotency。
 5. 如果業務要求真正 Atomic Operation，應優先由 Laravel 提供 Composite API。
+
+Partial Failure 範例：
+
+```text
+Earn Points   → Success
+Redeem Coupon → Failure
+             ↓
+       Workflow Failure
+```
+
+此時 Earn 可能已經在 Laravel 生效。Workflow 不假裝 Rollback、不自行補償，
+呼叫端也不能假設 Workflow Failure 代表所有先前 Mutation 都沒有發生。
+
+## Workflow-level Idempotency｜Workflow 層級冪等性
+
+目前 POS Checkout Workflow 不提供 End-to-End Idempotency。
+
+每個 Mutation Step 都使用自己的 Idempotency-Key，並由 Laravel Loyalty API
+負責該 Mutation 的 Idempotency State。因此需要區分：
+
+* **Step-level Idempotency**：目前支援。
+* **Workflow-level Idempotency**：目前不保證。
+
+如果呼叫端重新執行整個 Workflow，由於各 Step 會產生新的 Idempotency-Key，
+先前已成功的 Step 可能再次執行。目前 Workflow 不自行實作：
+
+* Rollback
+* Compensation
+* Workflow Idempotency Store
+* Distributed Transaction
+
+如果未來業務要求整個 Checkout 具備 End-to-End Idempotency，可以由呼叫端提供
+穩定的 Workflow Idempotency Key，讓各 Mutation Step 使用可重現的衍生 Key。
+如果需要真正的 Atomic Checkout，則應由 Laravel 提供 Composite Checkout API，
+讓完整流程在 Loyalty Domain 自己的 Transaction Boundary 內完成。
 
 ---
 
@@ -800,6 +855,9 @@ Fake Rollback
     ↓
 Assume Consistency
 ```
+
+這代表單一步驟的重複 Request 可以依賴 Laravel Idempotency 處理；但整筆
+Workflow 重試不保證不會重複執行先前已成功的 Step。
 
 如果未來需要真正的 Atomic Checkout，可以考慮由 Laravel 提供：
 

@@ -36,6 +36,9 @@ async def redeem_coupon(
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     client = CouponClient(laravel_client)
+    # 呼叫端未提供 Idempotency-Key 時，由 Integration Layer
+    # 為這一次 request 產生新的 key。此 key 不會跨 request 持久化，
+    # 因此無法提供跨重試的 Workflow-level Idempotency；需要安全重試時，呼叫端應提供穩定的 key。
     key = idempotency_key or laravel_client.generate_idempotency_key(prefix="coupon-redeem")
     return await client.redeem(
         customer_id=body.customer_id,
@@ -53,6 +56,9 @@ async def mixed_payment(
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     client = CouponClient(laravel_client)
+    # 呼叫端未提供 Idempotency-Key 時，由 Integration Layer
+    # 為這一次 request 產生新的 key。此 key 不會跨 request 持久化，
+    # 因此無法提供跨重試的 Workflow-level Idempotency；需要安全重試時，呼叫端應提供穩定的 key。
     key = idempotency_key or laravel_client.generate_idempotency_key(prefix="mixed")
     return await client.mixed_payment(
         customer_id=body.customer_id,
@@ -73,6 +79,9 @@ async def claim_coupon(
 ):
     """領取優惠券 - 對應 Laravel POST /api/v1/customers/{customer}/coupons/claim"""
     client = CouponClient(laravel_client)
+    # 呼叫端未提供 Idempotency-Key 時，由 Integration Layer
+    # 為這一次 request 產生新的 key。此 key 不會跨 request 持久化，
+    # 因此無法提供跨重試的 Workflow-level Idempotency；需要安全重試時，呼叫端應提供穩定的 key。
     key = idempotency_key or laravel_client.generate_idempotency_key(prefix="coupon-claim")
     return await client.claim(
         customer_id=customer_id,
@@ -87,6 +96,9 @@ async def claim_coupon_via_api(
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
 ):
     client = CouponClient(laravel_client)
+    # 呼叫端未提供 Idempotency-Key 時，由 Integration Layer
+    # 為這一次 request 產生新的 key。此 key 不會跨 request 持久化，
+    # 因此無法提供跨重試的 Workflow-level Idempotency；需要安全重試時，呼叫端應提供穩定的 key。
     key = idempotency_key or laravel_client.generate_idempotency_key(prefix="coupon-claim")
     return await client.claim(
         customer_id=body.customer_id,

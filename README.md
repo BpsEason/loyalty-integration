@@ -109,22 +109,24 @@ loyalty-integration/
 │   ├── __init__.py
 │   ├── conftest.py
 │   ├── find_valid_campaigns.py
-│   ├── test_client_verification.py
-│   ├── test_coupon*.py
-│   ├── test_customer_*.py
-│   ├── test_idempotency.py
-│   ├── test_login.py
-│   ├── test_mixed_payment.py
-│   ├── test_point_*.py
-│   ├── test_pos_checkout.py
-│   ├── test_reward_grants.py
-│   └── test_simple_idempotency.py
+│   ├── unit/
+│   │   └── test_client_auth.py
+│   └── integration/
+│       ├── test_client_verification.py
+│       ├── test_coupon*.py
+│       ├── test_customer_*.py
+│       ├── test_idempotency.py
+│       ├── test_login.py
+│       ├── test_mixed_payment.py
+│       ├── test_point_*.py
+│       ├── test_pos_checkout.py
+│       ├── test_reward_grants.py
+│       └── test_simple_idempotency.py
 │
 ├── list_all_routes.py
 ├── verify_routes.py
 ├── pytest.ini
 ├── requirements.txt
-├── .env.example
 └── README.md
 ```
 
@@ -192,9 +194,7 @@ Customer
 
 #### `tests`
 
-所有測試與 integration verification code 集中於此。
-
-pytest 測試與需要直接執行的 integration scripts 都放在 `tests/`，避免測試程式散落在專案根目錄。
+所有測試與 integration verification code 集中於此；不需要外部服務的測試位於 `tests/unit/`，需要 Laravel API 的測試與 scripts 位於 `tests/integration/`。
 
 ---
 
@@ -425,11 +425,26 @@ Domain Client 不應將 business failure 視為成功。
 
 ## 11. Testing
 
-執行全部 pytest：
+測試分為兩層：
+
+```text
+tests/
+├── unit/        # 不需要 Laravel API
+└── integration/ # 需要實際 Laravel API
+```
+
+### Local / Unit Tests
+
+GitHub CI 執行不需要 Laravel API 的測試與 application checks：
 
 ```bash
-python -m pytest -q
+python -m compileall -q app tests
+python -m pytest -q -m "not integration"
+python verify_routes.py
+git diff --check
 ```
+
+`verify_routes.py` 只檢查 FastAPI application 的 routes/OpenAPI contract，不啟動 lifespan，也不呼叫 Laravel API。
 
 只收集測試：
 
@@ -440,39 +455,32 @@ python -m pytest --collect-only -q
 執行指定測試：
 
 ```bash
-python -m pytest tests/test_reward_grants.py -q
+python -m pytest tests/integration/test_reward_grants.py -q -m integration
 ```
 
 執行指定測試 function：
 
 ```bash
-python -m pytest tests/test_reward_grants.py::test_xxx -q
+python -m pytest tests/integration/test_reward_grants.py::test_1_list_reward_grants -q -m integration
 ```
 
 ### CI
 
 GitHub Actions workflow 位於 `.github/workflows/ci.yml`，會在 push 到 `main` 或 `develop`，以及 Pull Request 目標為這兩個分支時執行。
 
-CI 依序執行：
+CI 不需要 Laravel API URL、Laravel credentials 或 GitHub Secrets。
 
-1. 使用 Python 3.13 並安裝 `requirements.txt`。
-2. 執行 `python -m compileall -q app tests`。
-3. 執行 `python -m pytest -q`。
-4. 執行 `python verify_routes.py` 驗證 API route contract。
+### Laravel Integration Tests
 
-目前 pytest 與 FastAPI 啟動流程會呼叫外部 Laravel API。GitHub repository 必須設定以下 Actions Secrets，且 runner 能連線到該 Laravel API：
+Integration tests 會使用 `tests/conftest.py` 的 live API fixture，並以 `@pytest.mark.integration` 標記。它們不屬於 GitHub CI 的 standalone verification。
 
-* `LARAVEL_API_BASE_URL`
-* `LARAVEL_EMAIL`
-* `LARAVEL_PASSWORD`
-
-本地可使用相同的驗證流程：
+本機有可用 Laravel API 時，設定 `.env` 後執行：
 
 ```bash
-python -m compileall -q app tests
-python -m pytest -q
-python verify_routes.py
+python -m pytest -q -m integration
 ```
+
+需要的環境變數為 `LARAVEL_API_BASE_URL`、`LARAVEL_EMAIL`、`LARAVEL_PASSWORD`；使用 coffee tenant 的測試另外需要 `LARAVEL_COFFEE_EMAIL` 與 `LARAVEL_COFFEE_PASSWORD`。
 
 ---
 
@@ -494,27 +502,7 @@ python verify_routes.py
 * Client integration
 * API route contract
 
-測試分為兩種用途：
-
-### Pytest Tests
-
-透過 pytest discovery 執行的自動化測試。
-
-```bash
-python -m pytest -q
-```
-
-### Integration Verification Scripts
-
-部分測試檔同時可以直接執行，用於與實際 Laravel API 進行 integration verification。
-
-這些檔案仍統一放在：
-
-```text
-tests/
-```
-
-避免測試程式散落在專案根目錄。
+`tests/integration/` 中的 pytest tests 與可直接執行的 verification scripts 都需要實際 Laravel API；`tests/unit/` 則不需要外部服務。
 
 ---
 
@@ -547,7 +535,7 @@ python -m compileall -q app tests
 ```
 
 ```bash
-python -m pytest -q
+python -m pytest -q -m "not integration"
 ```
 
 ```bash
@@ -706,8 +694,8 @@ Tests        → Regression protection
 
 ```bash
 python -m compileall -q app tests
-python -m pytest -q
-python list_all_routes.py
+python -m pytest -q -m "not integration"
+python verify_routes.py
 git diff --check
 ```
 

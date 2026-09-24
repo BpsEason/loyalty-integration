@@ -44,6 +44,11 @@ class LaravelClient:
     async def login(self, email: str | None = None, password: str | None = None) -> dict:
         email = email or settings.laravel_email
         password = password or settings.laravel_password
+        if not email or not password:
+            raise LaravelAPIError(
+                "Laravel credentials are not configured. Set LARAVEL_EMAIL and LARAVEL_PASSWORD.",
+                status_code=503,
+            )
 
         try:
             async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:

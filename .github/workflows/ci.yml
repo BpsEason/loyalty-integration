@@ -16,10 +16,6 @@ permissions:
 jobs:
   ci:
     runs-on: ubuntu-latest
-    env:
-      LARAVEL_API_BASE_URL: ${{ secrets.LARAVEL_API_BASE_URL }}
-      LARAVEL_EMAIL: ${{ secrets.LARAVEL_EMAIL }}
-      LARAVEL_PASSWORD: ${{ secrets.LARAVEL_PASSWORD }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -38,7 +34,10 @@ jobs:
         run: python -m compileall -q app tests
 
       - name: Run tests
-        run: python -m pytest -q
+        run: python -m pytest -q -m "not integration"
 
       - name: Validate API routes
         run: python verify_routes.py
+
+      - name: Check diff
+        run: git diff --check

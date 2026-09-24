@@ -1,5 +1,6 @@
 import asyncio
 import httpx
+import pytest
 from app.client.base import LaravelClient
 from app.client.customer import CustomerClient
 from app.client.point import PointClient
@@ -12,6 +13,7 @@ console = Console()
 FASTAPI_BASE_URL = "http://localhost:8000"
 
 
+@pytest.mark.integration
 async def test_1_create_transaction():
     """Test 1：正常建立 Point Transaction"""
     console.print("\n[bold blue]=== Test 1: 正常建立 Point Transaction ===[/bold blue]")
@@ -98,6 +100,7 @@ async def test_1_create_transaction():
         return customer_id, None, False
 
 
+@pytest.mark.integration
 async def test_2_same_idempotency_key(customer_id: int):
     """Test 2：Idempotency 重複 Request"""
     console.print("\n[bold blue]=== Test 2: 同一 Idempotency-Key 重複請求 ===[/bold blue]")
@@ -180,6 +183,7 @@ async def test_2_same_idempotency_key(customer_id: int):
         return False
 
 
+@pytest.mark.integration
 async def test_3_different_idempotency_keys(customer_id: int):
     """Test 3：不同 Idempotency-Key 建立兩筆獨立交易"""
     console.print("\n[bold blue]=== Test 3: 不同 Idempotency-Key 建立兩筆獨立交易 ===[/bold blue]")
@@ -242,6 +246,7 @@ async def test_3_different_idempotency_keys(customer_id: int):
         return False
 
 
+@pytest.mark.integration
 async def test_4_validation_error(customer_id: int):
     """Test 4：Validation Error - 送出無效請求"""
     console.print("\n[bold blue]=== Test 4: Validation Error 測試 ===[/bold blue]")
@@ -279,31 +284,6 @@ async def test_4_validation_error(customer_id: int):
     return True
 
 
-async def test_5_unauthorized():
-    """Test 5：未授權請求"""
-    console.print("\n[bold blue]=== Test 5: 未授權測試 ===[/bold blue]")
-    
-    # 使用未登入的客戶端
-    client = LaravelClient()
-    point_client = PointClient(client)
-    
-    try:
-        await point_client.create_transaction(
-            customer_id=1,
-            transaction_type="earn",
-            amount=100,
-        )
-        console.print("[red]✗ 未授權的請求不應該成功[/red]")
-        return False
-    except Exception as e:
-        if "Not authenticated" in str(e):
-            console.print("[green]✓ 正確捕獲未授權錯誤，觸發 LaravelAPIError[/green]")
-            return True
-        else:
-            console.print(f"[yellow]⚠ 捕獲到其他錯誤，但不是預期的未授權錯誤: {e}[/green]")
-            return False
-
-
 async def main():
     """執行所有測試"""
     console.print("[bold magenta]=== Point Transaction Create Integration Tests ===[/bold magenta]")
@@ -328,13 +308,6 @@ async def main():
         results["Test 2 - Same Idempotency-Key"] = None
         results["Test 3 - Different Idempotency-Key"] = None
         results["Test 4 - Validation Error"] = None
-    
-    # 測試 5 不需要 customer_id
-    test5_pass = await test_5_unauthorized()
-    results["Test 5 - Unauthorized"] = test5_pass
-    
-    # Tenant Isolation 測試需要不同 tenant 的會員，這裡先標記為無法測試
-    results["Test 6 - Tenant Isolation"] = None
     
     # 輸出結果表格
     table = Table(title="測試結果總表")

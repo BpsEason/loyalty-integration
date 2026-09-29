@@ -1,32 +1,42 @@
-# Loyalty Integration Demo｜Loyalty 整合展示專案
+# Loyalty Integration 整合專案｜繁體中文技術文件
 
-一個以 **FastAPI** 建立的 Loyalty / Point API Integration Demo，用來示範外部系統如何透過統一的 Python Client 整合 Laravel Loyalty API。
+一個以 **FastAPI** 建構的 Loyalty / Point API 整合專案，用來示範外部系統如何透過統一的 Python Client 整合 Laravel Loyalty API。
 
-本專案本身**不是 Loyalty Backend**，而是位於外部系統與 Laravel Loyalty API 之間的 **Integration Layer**，負責 API 整合、認證、Workflow Orchestration、錯誤處理、Idempotency-Key 傳遞與 API Contract 驗證。
+本專案本身**不是 Loyalty 後端**，而是位於外部系統與 Laravel Loyalty API 之間的**整合層（Integration Layer）**，負責 API 整合、認證、工作流程（Workflow）編排、錯誤處理、`Idempotency-Key` 傳遞與 API 契約（API Contract）驗證。
 
-> **FastAPI 負責 Integration；Laravel 負責 Loyalty Domain。**
-
-這是本專案最重要的責任邊界。
+> **核心責任邊界：FastAPI 負責整合（Integration）；Laravel 負責 Loyalty 領域（Loyalty Domain）。**
 
 ---
 
-# 1. 專案概述｜Project Overview
+# 專案重點
 
-本專案模擬企業外部系統整合 Loyalty Platform 的情境。
+* 單一真相來源（Single Source of Truth）：Laravel 擁有 Loyalty 狀態與業務邏輯
+* 明確責任邊界：FastAPI 為整合層、Laravel 為 Loyalty 領域
+* 領域 Client 模式（Domain Client Pattern）：Customer、Point、Coupon、Reward
+* 工作流程編排：POS Checkout、Mixed Payment
+* 路由契約驗證：`verify_routes.py`
+* Idempotency-Key 傳遞：由 FastAPI 傳遞，冪等性狀態由 Laravel 管理
+* 失敗邊界設計：不實作虛假的 Rollback
+* 刻意的架構取捨：不使用 Repository、不提前導入 Saga、不重複實作領域邏輯
 
-可能的外部系統包括：
+---
 
-* POS
-* Website
-* Mobile App
-* E-commerce
-* CRM
+# 1. 專案概述
+
+本專案模擬企業外部系統整合 Loyalty 平台的情境，可能的外部系統包括：
+
+* POS 系統
+* 網站
+* 手機應用程式
+* 電商平台
+* CRM 系統
 * 第三方會員系統
 
-整體架構：
+## 整體架構圖
 
 ```text
 External System
+
       │
       ▼
 ┌────────────────────────────┐
@@ -56,35 +66,33 @@ External System
 └────────────────────────────┘
 ```
 
-本專案的核心不是增加更多 Layer，而是建立清楚的責任邊界：
+## 層級責任說明
 
-| Layer           | Responsibility                                |
-| --------------- | --------------------------------------------- |
-| External System | 外部業務情境與使用者流程                                  |
-| FastAPI Router  | HTTP API Contract                             |
-| Domain Client   | Laravel API Communication                     |
-| Workflow        | Cross-domain Orchestration                    |
-| Laravel API     | Loyalty Domain Business Logic                 |
-| Tests           | Regression Protection / Contract Verification |
+| 層級 | 責任說明 |
+| --------------- | ----------------------------------- |
+| External System | 外部業務情境與使用者流程 |
+| FastAPI Router | HTTP API 契約 |
+| Domain Client | Laravel API 通訊 |
+| Workflow | 跨領域流程編排（Cross-domain Orchestration） |
+| Laravel API | Loyalty 領域業務邏輯 |
+| Tests | 回歸測試保護 / 契約驗證 |
 
 ---
 
-# 2. 為什麼需要 Integration Layer｜Why This Integration Layer Exists
+# 2. 為什麼需要整合層？
 
-外部系統理論上可以直接呼叫 Laravel Loyalty API。
+外部系統理論上可以直接呼叫 Laravel Loyalty API，但如果每個外部系統都自行整合，會逐漸產生重複的整合關注點（Integration Concerns）：
 
-但如果每一個外部系統都自行整合，會逐漸產生重複的 Integration Concerns：
+* JWT 認證
+* Token 自動刷新
+* HTTP 錯誤處理
+* 逾時處理
+* API 契約映射
+* `Idempotency-Key` 傳遞
+* 跨領域工作流程
+* 整合測試
 
-* JWT Authentication
-* Token Refresh
-* HTTP Error Handling
-* Timeout Handling
-* API Contract Mapping
-* Idempotency-Key 傳遞
-* Cross-domain Workflow
-* Integration Testing
-
-例如：
+如果每個外部系統都重複實作這些邏輯，會形成：
 
 ```text
 POS
@@ -109,81 +117,75 @@ CRM
  └── Error Handling
 ```
 
-這些重複的 Integration Logic 可以集中到：
+這些重複的整合邏輯可以集中到單一整合層，讓所有外部系統共享：
 
 ```text
 External Systems
+
        │
        ▼
+
 Integration Layer
+
        │
        ▼
+
 Laravel Loyalty API
 ```
 
-Integration Layer 的目的不是重新實作 Loyalty Domain。
-
-它的目的，是提供一個穩定且一致的整合邊界，讓外部系統不需要直接依賴 Laravel API 的整合細節。
+整合層的目的不是重新實作 Loyalty 領域邏輯，而是提供一個穩定一致的整合邊界，讓外部系統不需要直接依賴 Laravel API 的整合細節。
 
 ---
 
-# 3. 核心架構原則｜Core Architecture Principles
+# 3. 核心架構原則
 
-本專案遵循幾個核心原則。
+## 3.1 單一真相來源
 
-## 3.1 單一真相來源｜Single Source of Truth
+Laravel 是 Loyalty 領域唯一的業務邏輯擁有者，以下規則完全由 Laravel 負責：
 
-Laravel 是 Loyalty Domain 的唯一 Business Logic Owner。
+* 點數餘額計算
+* 點數交易管理
+* 點數到期處理
+* 優惠券資格判斷
+* 優惠券兌換邏輯
+* 獎勵資格判斷
+* 獎勵發放邏輯
+* 冪等性狀態管理
+* 所有 Loyalty 狀態儲存
 
-以下規則由 Laravel 負責：
+FastAPI 不會複製這些領域規則。
 
-* Point Balance
-* Point Transaction
-* Point Expiration
-* Coupon Eligibility
-* Coupon Redemption
-* Reward Eligibility
-* Reward Grant
-* Idempotency
-* Loyalty State
+## 3.2 整合層不成為第二個領域
 
-FastAPI 不複製這些規則。
+FastAPI 可以執行的操作：
 
----
+* 呼叫 Laravel API
+* 組合多個 API 呼叫
+* 映射請求 / 回應格式
+* 傳遞 `Idempotency-Key`
+* 處理整合層級錯誤
+* 編排跨領域工作流程
 
-## 3.2 Integration Layer 不成為第二個 Domain｜No Duplicate Domain Logic
+FastAPI 不應執行的操作：
 
-FastAPI 可以：
+* 重新計算 Loyalty 業務規則
+* 自行維護點數餘額
+* 自行判斷優惠券資格
+* 自行建立第二套冪等性狀態
+* 假裝擁有 Laravel 資料庫交易（Database Transaction）
 
-* 呼叫 API
-* 組合 API
-* Mapping Request / Response
-* 傳遞 Idempotency-Key
-* 處理 Integration Error
-* 編排跨 Domain Workflow
-
-FastAPI 不應：
-
-* 重新計算 Loyalty Business Rules
-* 自行維護 Point Balance
-* 自行判斷 Coupon Eligibility
-* 自行建立第二套 Idempotency State
-* 假裝擁有 Laravel Database Transaction
-
-核心原則：
-
-> **Integration Layer 可以負責 Integration，但不能成為 Loyalty Domain 的第二個真相來源。**
+> 核心原則：整合層可以負責整合工作，但不能成為 Loyalty 領域的第二個真相來源。
 
 ---
 
-# 4. 架構責任邊界｜Architecture & Responsibility Boundary
-
-整個系統可以簡化成：
+# 4. 架構責任邊界
 
 ```text
 External System
+
       │
       ▼
+
 ┌──────────────────────────┐
 │ Router                   │
 │ HTTP Contract            │
@@ -209,21 +211,21 @@ External System
 └──────────────────────────┘
 ```
 
-可以用一句話描述：
+簡化責任對應：
 
 ```text
-Router       → HTTP Contract
-Client       → API Communication
-Workflow     → Cross-domain Orchestration
-Laravel      → Loyalty Business Logic
-Tests        → Regression Protection
+Router       → HTTP 契約
+Client       → API 通訊
+Workflow     → 跨領域流程編排
+Laravel      → Loyalty 業務邏輯
+Tests        → 回歸測試保護
 ```
 
 ---
 
-# 5. 技術棧｜Technology Stack
+# 5. 技術棧
 
-## Integration Layer
+## 整合層技術
 
 * Python 3.13+
 * FastAPI
@@ -234,20 +236,18 @@ Tests        → Regression Protection
 * pytest-asyncio
 * python-dotenv
 
-## Backend
+## 後端技術
 
 * Laravel
-* JWT Authentication
+* JWT 認證
 * REST API
 
 ---
 
-# 6. 專案結構｜Project Structure
+# 6. 專案結構
 
 ```text
 loyalty-integration/
-
-│
 ├── app/
 │   ├── client/
 │   │   ├── base.py
@@ -255,10 +255,8 @@ loyalty-integration/
 │   │   ├── point.py
 │   │   ├── coupon.py
 │   │   └── reward.py
-│   │
 │   ├── core/
 │   │   └── dependencies.py
-│   │
 │   ├── routers/
 │   │   ├── auth.py
 │   │   ├── customers.py
@@ -266,29 +264,22 @@ loyalty-integration/
 │   │   ├── coupons.py
 │   │   ├── rewards.py
 │   │   └── workflows.py
-│   │
 │   ├── workflows/
 │   │   └── pos_checkout.py
-│   │
 │   ├── config.py
 │   └── main.py
-│
 ├── tests/
 │   ├── __init__.py
 │   ├── conftest.py
-│   │
 │   ├── unit/
 │   │   └── test_client_auth.py
-│   │
 │   └── integration/
 │       ├── test_reward_grants.py
 │       └── test_point_transaction_create.py
-│
 ├── scripts/
 │   └── integration/
 │       ├── explore_*.py
 │       └── explore_valid_campaigns.py
-│
 ├── list_all_routes.py
 ├── verify_routes.py
 ├── pytest.ini
@@ -298,42 +289,41 @@ loyalty-integration/
 
 ---
 
-# 7. Client Layer｜Domain Client
+# 7. 核心元件說明
 
-`app/client` 負責封裝 Laravel API 通訊。
+## 7.1 Client Layer（領域 Client）
 
-架構：
+`app/client` 負責封裝 Laravel API 通訊，架構為：
 
 ```text
 LaravelClient
-    │
     ├── CustomerClient
     ├── PointClient
     ├── CouponClient
     └── RewardClient
 ```
 
-## Base Client
+### Base Client 責任
 
-`LaravelClient` 負責共用 Integration Concerns：
+`LaravelClient` 集中處理共用的 Laravel API 整合議題，例如：
 
-* HTTP Request
-* JWT Authentication
-* Token Management
-* Request Timeout
-* Common Error Handling
-* Authentication State
+* HTTP 請求發送
+* JWT 認證管理
+* 認證狀態維護
+* 請求逾時處理
+* 通用 HTTP 錯誤處理
+* `Idempotency-Key` 等共用請求處理
 
-## Domain Client
+### Domain Client 責任
 
-Domain Client 負責特定 Domain 的：
+各領域 Client 負責特定領域的：
 
-* Endpoint Mapping
-* Request Payload
-* Query Parameters
-* Response Handling
+* Endpoint 映射
+* 請求酬載處理
+* 查詢參數處理
+* 回應格式處理
 
-例如：
+範例：
 
 ```python
 await point_client.create_transaction(
@@ -343,13 +333,7 @@ await point_client.create_transaction(
 )
 ```
 
-Python 內部使用：
-
-```text
-transaction_type
-```
-
-Laravel API Contract 則維持：
+內部 Python 使用語義化命名，但對外維持 Laravel API 契約不變：
 
 ```json
 {
@@ -358,24 +342,20 @@ Laravel API Contract 則維持：
 }
 ```
 
-也就是：
-
-> **Internal Naming 可以改善語意，但不應因此任意修改 External API Contract。**
+> 原則：內部命名可改善語義，但不應任意修改外部 API 契約。
 
 ---
 
-# 8. Router Layer｜API Router
+## 7.2 Router Layer（API 路由器）
 
-`app/routers` 負責 FastAPI HTTP Contract。
+`app/routers` 負責 FastAPI HTTP 契約，主要責任：
 
-Router 主要責任：
+1. 接收 HTTP 請求
+2. 驗證請求資料
+3. 呼叫領域 Client 或工作流程
+4. 回傳 API 回應
 
-1. 接收 Request
-2. 驗證 Request Data
-3. 呼叫 Domain Client 或 Workflow
-4. 回傳 API Response
-
-流程：
+處理流程：
 
 ```text
 HTTP Request
@@ -390,15 +370,13 @@ Client / Workflow
 Laravel API
 ```
 
-Router 不應重新實作 Loyalty Business Logic。
+Router 不應重新實作 Loyalty 業務邏輯。
 
 ---
 
-# 9. Workflow Layer｜Workflow Orchestration
+## 7.3 Workflow Layer（工作流程編排）
 
-`app/workflows` 負責跨 Domain API 的流程編排。
-
-例如 POS Checkout：
+`app/workflows` 負責跨領域 API 的流程編排，以 POS Checkout 為例：
 
 ```text
 Customer
@@ -412,43 +390,39 @@ Customer
    └── Return Checkout Result
 ```
 
-Workflow 的責任是：
+工作流程的責任是**決定 API 操作的執行順序與整合結果**，但不負責：
 
-> **決定 API Operation 的執行順序與整合結果。**
+* 點數計算邏輯
+* 優惠券資格判斷
+* 獎勵發放規則
+* 任何 Loyalty 狀態管理
 
-Workflow 不負責：
-
-* Point Calculation
-* Coupon Eligibility
-* Reward Rules
-* Loyalty State
-
-這些仍由 Laravel API 負責。
+這些仍完全由 Laravel API 負責。
 
 ---
 
-# 10. Application Factory｜Application Factory
+## 7.4 Application Factory
 
-FastAPI 使用 Application Factory：
+FastAPI 使用應用程式工廠模式：
 
 ```python
 app = create_app()
 ```
 
-目的在於讓不同 execution context 使用一致的 Application Initialization：
+目的是讓不同執行環境使用一致的應用程式初始化流程：
 
-* Uvicorn
-* TestClient
-* pytest
-* Route Verification
+* Uvicorn 生產 / 開發環境
+* TestClient 測試環境
+* pytest 測試框架
+* 路由驗證工具
 
-Router Registration 集中於 Application Creation Process，避免不同啟動方式產生不同的 Route State。
+路由器註冊集中於應用程式建立流程，避免不同啟動方式產生不一致的路由狀態。
 
 ---
 
-# 11. API Domains｜API 領域
+# 8. API 領域清單
 
-## Authentication｜身份驗證
+## 8.1 身份驗證（Authentication）
 
 ```text
 POST /auth/login
@@ -457,34 +431,29 @@ POST /auth/refresh
 POST /auth/logout
 ```
 
----
-
-## Customers｜會員
+## 8.2 會員管理（Customers）
 
 ```text
 GET /customers
 GET /customers/{customer_id}
 GET /customers/{customer_id}/membership
+POST /customers/identify
+GET /customers/{customer_id}/qr-code
 ```
 
----
-
-## Points｜點數
+## 8.3 點數管理（Points）
 
 ```text
 GET  /customers/{customer_id}/points
 GET  /customers/{customer_id}/point-transactions
 POST /customers/{customer_id}/point-transactions
-
 GET  /customers/{customer_id}/point-transactions/expiring
-
 GET  /customers/{customer_id}/point-transactions/{transaction_id}
-
 POST /points/earn
 POST /points/redeem
 ```
 
-Transaction Query：
+交易查詢範例：
 
 ```text
 GET /customers/{customer_id}/point-transactions?type=earn
@@ -492,404 +461,358 @@ GET /customers/{customer_id}/point-transactions?type=earn
 GET /customers/{customer_id}/point-transactions?type=redeem
 ```
 
-Python Client 使用：
-
-```text
-transaction_type
-```
-
-對外 Laravel API Contract 維持：
-
-```text
-type
-```
-
-由 Domain Client 負責 Mapping。
-
----
-
-## Coupons｜優惠券
+## 8.4 優惠券管理（Coupons）
 
 ```text
 GET  /customers/{customer_id}/coupons
 GET  /customers/{customer_id}/coupons/{user_coupon_id}
 GET  /customers/{customer_id}/coupon-redemptions
-
 POST /coupons/claim
 POST /customers/{customer_id}/coupons/claim
 POST /coupons/redeem
 ```
 
----
-
-## Rewards｜獎勵
+## 8.5 獎勵管理（Rewards）
 
 ```text
 GET  /customers/{customer_id}/reward-grants
 POST /customers/{customer_id}/rewards/grant
 ```
 
----
-
-## Workflows｜工作流程
+## 8.6 工作流程（Workflows）
 
 ```text
 POST /workflows/pos-checkout
 POST /payments/mixed
 ```
 
-Workflow Endpoint 用於將多個 Loyalty API Operation 組合成完整業務流程。
+工作流程端點用於將多個 Loyalty API 操作組合成完整業務流程。
+
+## 8.7 健康檢查（Health）
+
+```text
+GET /health
+```
 
 ---
 
-# 12. Idempotency｜冪等性
+# 9. 冪等性（Idempotency）
 
-涉及可能重複執行的 Mutation Request，可以透過：
+涉及可能重複執行的變更請求（Mutation Request），可透過以下標頭傳遞唯一請求鍵：
 
 ```http
 Idempotency-Key: order-20260924-001
 ```
 
-傳遞唯一 Request Key。
-
-Integration Layer 的責任是：
+整合層的責任僅為：
 
 ```text
-Receive Key
+接收 Key
     ↓
-Forward Key
+轉發 Key
     ↓
-Laravel Handles Idempotency
+由 Laravel 處理冪等性
 ```
 
-而不是自行建立 Idempotency State。
+不會自行建立冪等性狀態。
 
-如果呼叫端提供穩定的 `Idempotency-Key`，Integration Layer 會將它傳遞給
-Laravel，讓 Laravel 在重試時識別相同的 Mutation。若呼叫端沒有提供 key，
-Integration Layer 只會為當次 request 自動產生一個 key：
+如果呼叫端提供穩定的 `Idempotency-Key`，整合層會將其轉發給 Laravel，讓 Laravel 在重試時識別相同的變更操作。
+
+若呼叫端未提供 Key，整合層只會為當次請求自動產生一個 Key：
 
 ```text
-Request #1       → generated-key-A
-Later retry      → generated-key-B
+第一次請求     → generated-key-A
+稍後重試請求   → generated-key-B
 ```
 
-自動產生的 key 不會跨 request 持久化，因此只保護當次 request，不能提供跨重試的
-End-to-End Idempotency。需要安全重試時，呼叫端必須提供穩定的 key。
+自動產生的 Key 不會跨請求持久化，因此只能保護當次請求，無法提供跨重試的端對端冪等性（End-to-End Idempotency）。
 
-這裡的 Idempotency 是 **Step-level Idempotency**：Laravel 可以處理同一個
-Mutation 的重複 Request，但目前 POS Checkout Workflow 不提供
-**End-to-End Idempotency**。Workflow 中的每個 Mutation Step 仍可能使用不同的
-Idempotency-Key。
+需要安全重試時，呼叫端必須提供穩定的 Key。
 
-`order_reference` 是 Business / Trace Reference；`Idempotency-Key` 是 Duplicate
-Mutation Protection。兩者維持不同責任，不互相取代。
+## 目前冪等性限制
 
-架構：
+目前架構支援**單一變更操作的冪等性傳遞與處理**，但 POS Checkout 工作流程本身不提供**端對端冪等性**。
+
+工作流程中的每個變更步驟可能使用不同的 `Idempotency-Key`。
+
+`order_reference` 是業務追蹤編號；`Idempotency-Key` 是重複變更防護機制，兩者責任不同，不可互相取代。
+
+## 冪等性架構圖
 
 ```text
 External System
+
       │
       │ Idempotency-Key
       ▼
+
 FastAPI
+
       │
-      │ Forward unchanged
+      │ 完整轉發（Forward unchanged）
       ▼
+
 Laravel API
+
       │
       ▼
+
 Idempotency Handling
 ```
 
 ---
 
-# 13. 為什麼 Idempotency State 放在 Laravel｜Why Idempotency State Belongs to Laravel
+# 10. 為什麼冪等性狀態放在 Laravel？
 
-如果 FastAPI 與 Laravel 各自維護 Idempotency：
+如果 FastAPI 與 Laravel 各自維護冪等性狀態：
 
 ```text
 FastAPI Idempotency State
+
           +
+
 Laravel Idempotency State
 ```
 
-可能產生：
+可能產生狀態不一致的問題：
 
 ```text
-FastAPI → Request already processed
-Laravel → Request is new
+FastAPI → 此請求已處理過
+
+Laravel → 此請求是新的
 ```
 
-形成兩套不一致的 State。
+因此冪等性的權威狀態必須保留在 Laravel，FastAPI 只負責：
 
-因此 Idempotency 的 authoritative state 留在 Laravel。
-
-FastAPI 只負責：
-
-* 接收
-* 傳遞
+* 接收請求中的 Key
+* 正確轉發 Key
 * 正確處理 Laravel 回應
 
-這符合：
+這符合原則：
 
-> **State ownership should remain with the system that owns the business mutation.**
+> `State ownership should remain with the system that owns the business mutation.`
 
 ---
 
-# 14. Error Handling｜錯誤處理
+# 11. 錯誤處理
 
-`LaravelClient` 統一處理 Laravel API Communication。
+`LaravelClient` 統一處理 Laravel API 通訊場景：
 
-主要情境：
+* 認證失敗
+* HTTP 錯誤回應
+* 請求逾時
+* 連線失敗
+* 無效回應格式
+* 缺少認證 Token
 
-* Authentication Failure
-* HTTP Error Response
-* Timeout
-* Connection Failure
-* Invalid Response
-* Missing Authentication Token
-
-HTTP Status 依 Laravel API Contract 解讀：
+HTTP 狀態碼解讀遵循 Laravel API 契約：
 
 ```text
-2xx → Successful Operation
-
-4xx → Client / Request / Business Validation Error
-
-5xx → Server-side Error
+2xx → 操作成功
+4xx → 客戶端 / 請求 / 業務驗證錯誤
+5xx → 伺服器端錯誤
 ```
 
-Domain Client 不應將 Business Failure 視為成功。
-
-例如：
+領域 Client 不應將業務失敗視為成功，例如：
 
 ```text
 Laravel API
      │
-     │ 422
+     │ 回傳 422
      ▼
 Domain Client
      │
      ▼
-Business Failure
+回傳業務失敗
      │
      ▼
-Workflow must not report success
+Workflow 不得回報成功
 ```
 
 ---
 
-# 15. Authentication Failure｜身份驗證失敗
+# 12. 逾時與連線失敗處理
 
-如果 Client 沒有有效 Token：
-
-```text
-Client
-  │
-  ├── No Token
-  │
-  ▼
-Reject Request
-```
-
-而不是：
+必須區分各種失敗類型：
 
 ```text
-Client
-  │
-  ├── No Token
-  │
-  ▼
-Send Request
-  │
-  ▼
-Laravel
+HTTP 4xx 錯誤
+
+HTTP 5xx 錯誤
+
+Timeout 逾時
+
+Connection Failure 連線失敗
+
+Invalid Response 無效回應
+
+Authentication Failure 認證失敗
 ```
 
-Integration Layer 應避免主動送出明知缺少必要 Authentication Context 的 Request。
-
----
-
-# 16. Timeout & Connection Failure｜逾時與連線失敗
-
-需要區分：
-
-```text
-HTTP 4xx
-HTTP 5xx
-Timeout
-Connection Failure
-Invalid Response
-Authentication Failure
-```
-
-尤其對 Mutation Request：
-
-```text
-Timeout
-```
-
-不代表 Laravel 一定沒有執行成功。
-
-可能存在：
+尤其對於變更請求（Mutation Request），`Timeout` 不代表 Laravel 一定沒有執行成功，可能存在以下場景：
 
 ```text
 FastAPI
+
    │
-   │ Request
+   │ 送出請求
    ▼
+
 Laravel
+
    │
-   ├── Operation completed
+   ├── 操作已完成
    │
-   └── Response lost
+   └── 回應遺失
    │
    X
-FastAPI timeout
+
+FastAPI 觸發逾時
 ```
 
-因此不能簡單採用：
+因此不能簡單地在發生錯誤時就重試：
 
 ```python
+# 不安全的做法
 if error:
     retry()
 ```
 
-Mutation Retry 必須考慮 Idempotency。
+變更操作的重試必須先考慮冪等性機制。
 
 ---
 
-# 17. Failure & Consistency｜失敗處理與一致性
+# 13. 失敗處理與一致性
 
-跨系統 Workflow 最重要的問題不是「API 能不能呼叫」，而是：
+跨系統工作流程最重要的問題不是「API 能不能呼叫」，而是：
 
-> **當 Workflow 中間失敗時，誰負責一致性？**
+> **當工作流程中間失敗時，誰負責一致性？**
 
-以 POS Checkout 為例：
+以 POS Checkout 為例，工作流程步驟：
 
 ```text
-1. Validate Customer
-2. Earn Points
-3. Redeem Coupon
+1. 驗證會員身份
+2. 累積點數
+3. 兌換優惠券
 ```
 
-假設：
+假設執行結果：
 
 ```text
 Validate Customer → Success
-Earn Points        → Success
-Redeem Coupon      → Failure
+
+Earn Points       → Success
+
+Redeem Coupon     → Failure
 ```
 
-FastAPI 不會假設自己可以安全地 Rollback 前面的 Laravel Operation。
+FastAPI 不會假裝自己可以安全地 Rollback 前面已經在 Laravel 執行成功的操作。
 
-目前策略：
+目前的處理策略：
 
-1. 回傳明確 Workflow Failure。
-2. 不在 FastAPI 建立第二套 Transaction System。
-3. 不維護第二套 Loyalty State。
-4. 依賴 Laravel Idempotency 保護單一步驟的重複 Mutation；目前 Workflow 本身不保證 End-to-End Idempotency。
-5. 如果業務要求真正 Atomic Operation，應優先由 Laravel 提供 Composite API。
+1. 回傳明確的工作流程失敗
+2. 不在 FastAPI 建立第二套交易系統
+3. 不維護第二套 Loyalty 狀態
+4. 依賴 Laravel 冪等性保護單一步驟的重複變更；目前工作流程本身不保證端對端冪等性
+5. 如果業務要求真正的原子操作（Atomic Operation），應優先由 Laravel 提供複合式 API
 
-Partial Failure 範例：
+## 部分失敗場景
 
 ```text
 Earn Points   → Success
+
 Redeem Coupon → Failure
-             ↓
-       Workflow Failure
+               ↓
+          工作流程失敗
 ```
 
-此時 Earn 可能已經在 Laravel 生效。Workflow 不假裝 Rollback、不自行補償，
-呼叫端也不能假設 Workflow Failure 代表所有先前 Mutation 都沒有發生。
+此時累積點數的操作可能已經在 Laravel 生效。
 
-## Workflow-level Idempotency｜Workflow 層級冪等性
+工作流程不會假裝 Rollback、不自行補償，呼叫端也不能假設工作流程失敗代表所有先前的變更操作都沒有發生。
 
-目前 POS Checkout Workflow 不提供 End-to-End Idempotency。
-
-每個 Mutation Step 都使用自己的 Idempotency-Key，並由 Laravel Loyalty API
-負責該 Mutation 的 Idempotency State。因此需要區分：
-
-* **Step-level Idempotency**：目前支援。
-* **Workflow-level Idempotency**：目前不保證。
-
-如果呼叫端重新執行整個 Workflow，由於各 Step 會產生新的 Idempotency-Key，
-先前已成功的 Step 可能再次執行。目前 Workflow 不自行實作：
-
-* Rollback
-* Compensation
-* Workflow Idempotency Store
-* Distributed Transaction
-
-如果未來業務要求整個 Checkout 具備 End-to-End Idempotency，可以由呼叫端提供
-穩定的 Workflow Idempotency Key，讓各 Mutation Step 使用可重現的衍生 Key。
-如果需要真正的 Atomic Checkout，則應由 Laravel 提供 Composite Checkout API，
-讓完整流程在 Loyalty Domain 自己的 Transaction Boundary 內完成。
+> 關鍵概念：**工作流程失敗 ≠ 所有先前的變更操作都會自動 Rollback。**
 
 ---
 
-# 18. Workflow Failure Strategy｜Workflow 失敗策略
+# 14. 工作流程層級冪等性現況
 
-目前 Workflow 採取：
+目前 POS Checkout 工作流程不提供端對端冪等性。
+
+每個變更步驟的冪等性由 Laravel Loyalty API 負責，因此需要區分：
+
+* **單一操作冪等性**：由 Laravel 處理
+* **工作流程級冪等性**：目前不保證
+
+如果呼叫端重新執行整個工作流程，由於各步驟可能產生新的 `Idempotency-Key`，先前已成功的步驟可能再次執行。
+
+目前工作流程不自行實作：
+
+* Rollback 機制
+* 補償交易（Compensation）
+* 工作流程冪等性儲存區
+* 分散式交易
+
+如果未來業務要求整個 Checkout 具備端對端冪等性，可以由呼叫端提供穩定的工作流程冪等性 Key，讓各變更步驟使用可重現的衍生 Key。
+
+如果需要真正的原子化 Checkout，則應由 Laravel 提供複合式 Checkout API，讓完整流程在 Loyalty 領域自己的交易邊界內完成。
+
+---
+
+# 15. 工作流程失敗策略
+
+目前工作流程採取的策略：
 
 ```text
-Orchestrate
+編排流程
     ↓
-Detect Failure
+偵測失敗
     ↓
-Return Explicit Failure
+回傳明確失敗
 ```
 
 而不是：
 
 ```text
-Orchestrate
+編排流程
     ↓
-Failure
+發生失敗
     ↓
-Fake Rollback
+假裝 Rollback
     ↓
-Assume Consistency
+假設一致性
 ```
 
-這代表單一步驟的重複 Request 可以依賴 Laravel Idempotency 處理；但整筆
-Workflow 重試不保證不會重複執行先前已成功的 Step。
-
-如果未來需要真正的 Atomic Checkout，可以考慮由 Laravel 提供：
-
-```text
-POST /checkout
-```
-
-由 Laravel 在自己的 Transaction Boundary 中處理：
-
-```text
-Validate Customer
-      ↓
-Redeem Coupon
-      ↓
-Earn Points
-      ↓
-Commit
-```
-
-這樣 Transaction Ownership 仍然位於真正擁有 Loyalty State 的系統。
+這代表單一步驟的重複請求可以依賴 Laravel 的冪等性處理，但整筆工作流程重試不保證不會重複執行先前已成功的步驟。
 
 ---
 
-# 19. Deliberate Design Trade-offs｜刻意做出的設計取捨
+# 16. 重要架構決策
 
-## 不使用 Repository Layer｜No Repository Layer
+| 領域 | 決策 |
+| ------------- | ------------------- |
+| 領域擁有者 | Laravel Loyalty API |
+| 整合層實作 | FastAPI |
+| 業務邏輯擁有者 | Laravel |
+| 狀態擁有者 | Laravel |
+| 冪等性狀態擁有者 | Laravel |
+| 工作流程模式 | 流程編排（Orchestration） |
+| Repository 模式 | 未使用 |
+| 重複領域服務 | 避免實作 |
+| 抽象工廠模式 | 延後實作 |
+| Saga 模式 | 延後實作 |
+| 分散式交易 | 未使用 |
+| 契約驗證機制 | `verify_routes.py` |
+| 測試策略 | 單元測試 + 整合測試 |
 
-目前主要 Data Source 只有：
+本專案優先保持責任清晰與單一真相來源，而非提前導入不必要的抽象層。
 
-```text
-FastAPI
-   ↓
-Laravel API
-```
+---
 
-因此：
+# 17. 刻意做出的設計取捨
+
+## 17.1 不使用 Repository Layer
+
+目前主要的資料來源只有 Laravel API，因此：
 
 ```text
 Router
@@ -903,89 +826,56 @@ Client
 Laravel
 ```
 
-會增加間接層，但沒有解決實際問題。
+會增加不必要的間接層，但無法解決實際問題。
 
-只有在未來出現：
+只有在未來出現多個後端提供者、多個資料來源時，才考慮導入 Repository 或其他適合的抽象。
 
-* Multiple Backend Provider
-* Multiple Data Source
-* Provider-specific Persistence
+## 17.2 不建立重複的領域服務
 
-等實際需求時，才考慮 Repository。
+不在 FastAPI 重寫任何 Loyalty 領域規則：
 
----
+* 點數規則
+* 餘額計算規則
+* 優惠券規則
+* 獎勵規則
+* 冪等性規則
 
-## 不建立 Duplicate Domain Service｜No Duplicate Domain Service
-
-不在 FastAPI 重寫：
-
-* Point Rules
-* Balance Rules
-* Coupon Rules
-* Reward Rules
-* Idempotency Rules
-
-避免：
+避免形成兩套可能逐漸分歧的領域邏輯：
 
 ```text
 Laravel Business Rules
+
         +
+
 FastAPI Business Rules
 ```
 
-形成兩套可能逐漸 Diverge 的 Domain Logic。
+## 17.3 不使用抽象工廠模式
+
+目前每個領域只有一種 Client 實作，既有的 `PointClient`、`CouponClient`、`RewardClient` 已經足夠。
+
+在沒有實際需求前，不建立多餘的介面、工廠、抽象工廠或提供者註冊表。
+
+## 17.4 不在 FastAPI 建立冪等性儲存區
+
+冪等性狀態屬於 Laravel 的變更狀態，因此保持由 Laravel 管理，整合層不重複儲存。
+
+## 17.5 不提前導入 Saga 模式
+
+目前工作流程的複雜度尚未需要分散式補償機制，因此不提前加入：
+
+* Saga 框架
+* 工作流程持久化
+* 補償引擎
+* 分散式交易框架
+
+這些能力應由實際的業務需求與系統複雜度驅動。
 
 ---
 
-## 不使用 Abstract Factory｜No Abstract Factory
+# 18. 架構能力邊界：何時目前架構會不足？
 
-目前每個 Domain 只有一種 Client Implementation。
-
-因此：
-
-```text
-PointClient
-CouponClient
-RewardClient
-```
-
-已經足夠。
-
-沒有實際需求時，不建立：
-
-```text
-Interface
-Factory
-Abstract Factory
-Provider Registry
-```
-
----
-
-## 不在 FastAPI 建立 Idempotency Store｜No FastAPI Idempotency Store
-
-Idempotency State 屬於 Laravel 的 Mutation State，因此保持由 Laravel 管理。
-
----
-
-## 不提前導入 Saga｜No Premature Saga
-
-目前 Workflow 尚未達到需要 Distributed Compensation 的複雜度。
-
-因此不提前加入：
-
-* Saga Framework
-* Workflow Persistence
-* Compensation Engine
-* Distributed Transaction Framework
-
-等基礎設施。
-
----
-
-# 20. 架構能力邊界｜When This Architecture Stops Being Enough
-
-目前架構適合：
+目前架構適用於：
 
 ```text
 External System
@@ -997,31 +887,28 @@ Laravel Loyalty API
 
 但當需求演進時，需要重新評估架構。
 
----
+## 18.1 多後端提供者場景
 
-## Multiple Backend Providers｜多後端 Provider
-
-例如：
+如果需要整合多個 Loyalty 提供者：
 
 ```text
 FastAPI
+
  ├── Laravel Loyalty
  ├── Another Loyalty Provider
  └── External Coupon Provider
 ```
 
-此時才可能需要：
+此時才需要導入：
 
-* Provider Interface
+* 提供者介面
 * Adapter
 * Factory
 * Provider Registry
 
----
+## 18.2 長時間執行的工作流程
 
-## Long-running Workflows｜長時間工作流程
-
-如果 Workflow 變成：
+如果工作流程變得複雜且可能持續數秒或數分鐘：
 
 ```text
 Payment
@@ -1035,37 +922,35 @@ Notification
 CRM
 ```
 
-並且可能持續數秒甚至數分鐘，可能需要：
+可能需要加入：
 
 * Queue
 * Async Job
-* Persistent Workflow State
+* 持久化工作流程狀態
 * Event
 * Compensation
-* Saga-style Orchestration
+* Saga 風格的流程編排
+
+## 18.3 高流量整合場景
+
+當整合層成為大量流量的中央閘道時，才考慮加入：
+
+* 流量限制（Rate Limiting）
+* 重試策略（Retry Policy）
+* 斷路器（Circuit Breaker）
+* 指標收集（Metrics）
+* 分散式追蹤（Distributed Tracing）
+* 集中式日誌（Centralized Logging）
+
+這些能力不在目前 demo 階段預先加入。
 
 ---
 
-## High-volume Integration｜高流量整合
+# 19. 程式碼規範
 
-當 Integration Layer 成為大量流量的 Central Gateway，才考慮：
+## 19.1 領域 Client 規範
 
-* Rate Limiting
-* Retry Policy
-* Circuit Breaker
-* Metrics
-* Distributed Tracing
-* Centralized Logging
-
-這些能力不在目前 Demo 階段預先加入。
-
----
-
-# 21. Code Conventions｜程式碼規範
-
-## Domain Client｜Domain Client
-
-Domain Client 只負責對應 Laravel API。
+Domain Client 只負責對應 Laravel API：
 
 ```python
 await point_client.create_transaction(
@@ -1075,7 +960,7 @@ await point_client.create_transaction(
 )
 ```
 
-內部 Mapping：
+內部映射保持 API 契約不變：
 
 ```python
 {
@@ -1084,17 +969,13 @@ await point_client.create_transaction(
 }
 ```
 
-原則：
-
-* Python Internal Naming 保持語意清楚。
-* Laravel API Contract 保持一致。
-* 不因 Python Convention 任意修改 External Contract。
+原則：Python 內部命名保持語義清楚，但 Laravel API 契約維持不變，不因 Python 慣例任意修改外部契約。
 
 ---
 
-## Router｜Router
+## 19.2 Router 規範
 
-Router：
+Router 的處理流程：
 
 ```text
 Request
@@ -1106,13 +987,13 @@ Client / Workflow
 Response
 ```
 
-不要在 Router 中重新實作 Loyalty Business Logic。
+不要在 Router 中重新實作 Loyalty 業務邏輯。
 
 ---
 
-## Workflow｜Workflow
+## 19.3 Workflow 規範
 
-Workflow：
+工作流程的處理流程：
 
 ```text
 Router
@@ -1124,13 +1005,13 @@ Domain Clients
 Laravel API
 ```
 
-Workflow 負責 Orchestration，不負責 Loyalty Domain Rules。
+工作流程只負責流程編排，不負責 Loyalty 領域規則。
 
 ---
 
-# 22. API Contract Principle｜API Contract 原則
+# 20. API 契約原則
 
-本專案與 Laravel Loyalty API 之間存在明確 Contract。
+本專案與 Laravel Loyalty API 之間存在明確的契約。
 
 任何以下修改：
 
@@ -1139,10 +1020,10 @@ Workflow 負責 Orchestration，不負責 Loyalty Domain Rules。
 * Query Parameter
 * Request Body
 * Response Structure
-* Authentication Behaviour
+* Authentication 行為
 * Error Handling
 
-都應同步確認：
+都應同步確認整個鏈路的一致性：
 
 ```text
 FastAPI Router
@@ -1156,44 +1037,39 @@ Tests
 Documentation
 ```
 
-避免只修改單一層造成 Integration Regression。
+避免只修改單一層造成整合回歸（Integration Regression）。
 
 ---
 
-# 23. 測試策略｜Testing Strategy
+# 21. 測試策略
 
-測試分為：
+測試分為兩大類：
 
 ```text
 tests/
+
 ├── unit/
 └── integration/
 ```
 
----
+## 21.1 單元測試（Unit Tests）
 
-## Unit Tests｜單元測試
+不需要連接實際的 Laravel API，適合測試：
 
-不需要 Laravel API。
+* Client 認證行為
+* 請求映射邏輯
+* 本地應用程式邏輯
+* 錯誤處理邏輯
 
-適合測試：
-
-* Client Authentication Behaviour
-* Request Mapping
-* Local Application Logic
-* Error Handling
-
-執行：
+執行指令：
 
 ```bash
 python -m pytest -q -m "not integration"
 ```
 
----
+## 21.2 整合測試（Integration Tests）
 
-## Integration Tests｜整合測試
-
-需要實際 Laravel API。
+需要實際可用的 Laravel API。
 
 正式 pytest 目前涵蓋：
 
@@ -1201,47 +1077,51 @@ python -m pytest -q -m "not integration"
 * Point Transaction
 * Idempotency
 * Reward Grant
-* Validation
-* Customer lookup fixture
+* 驗證邏輯
+* 會員查詢 Fixture
 
-`scripts/integration/explore_*.py` 是開發用探索腳本，不屬於 pytest suite，
-也不納入 CI 的正式 pass/fail 結果。
+`scripts/integration/explore_*.py` 是開發用的探索腳本，不屬於正式 pytest suite，也不納入 CI 的 pass/fail 結果。
 
-執行：
+執行整合測試：
 
 ```bash
 python -m pytest -q -m integration
 ```
 
-指定測試：
+指定特定測試檔案：
 
 ```bash
 python -m pytest tests/integration/test_reward_grants.py -q -m integration
 ```
 
-指定 Test Function：
+指定測試函數：
 
 ```bash
 python -m pytest tests/integration/test_reward_grants.py::test_list_reward_grants_returns_response -q -m integration
 ```
 
-目前尚未納入正式 pytest coverage 的項目包括 Authentication API、Coupon API、
-POS Checkout、Mixed Payment 與 Customer API 行為；對應探索腳本仍保留於
-`scripts/integration/`。
+## 21.3 測試覆蓋缺口
 
-已知缺口：
+目前尚未納入正式 pytest coverage 的項目包括：
 
-* POS Checkout Partial Failure：尚未有穩定資料建立 Earn 成功、Redeem 失敗情境。
-* Reward Mutation：需要尚未領取指定 reward 的 customer fixture；目前 demo tenant
-      的 reward 可能已全部發放，因此相關 mutation tests 會 skip。
-* Reward 不同 Idempotency-Key：需要兩組可發放的 customer/reward fixture。
-* Tenant Isolation：需要兩個 tenant credentials 與 contract-defined 403/404 資料。
+* Authentication API
+* Coupon API
+* POS Checkout
+* Mixed Payment
+* Customer API 行為
+
+已知的測試缺口：
+
+* POS Checkout 部分失敗場景：尚未有穩定資料建立「累積點數成功、兌換優惠券失敗」的情境
+* Reward Mutation：需要尚未領取指定 reward 的會員 Fixture；目前 demo 環境的 reward 可能已全部發放，因此相關變更測試會跳過
+* 不同 Idempotency-Key 的 Reward 測試：需要兩組可發放的會員 / 獎勵 Fixture
+* Tenant 隔離測試：需要兩組 tenant 憑證與契約定義的 403 / 404 測試資料
 
 ---
 
-# 24. Route Contract Verification｜Route Contract 驗證
+# 22. 路由契約驗證
 
-`verify_routes.py` 用於驗證 FastAPI 最終註冊的 OpenAPI Routes 與 HTTP Methods。
+`verify_routes.py` 用於驗證 FastAPI 最終註冊的 OpenAPI 路由與 HTTP 方法。
 
 執行：
 
@@ -1251,36 +1131,62 @@ python verify_routes.py
 
 驗證內容：
 
-1. 建立完整 FastAPI Application。
-2. 讀取 OpenAPI Route Definitions。
-3. 列出目前 Endpoint。
-4. 驗證核心 API Path。
-5. 驗證 HTTP Method。
-6. 發現 Contract Regression 時以 Non-zero Exit Code 結束。
+1. 建立完整的 FastAPI 應用程式
+2. 讀取 OpenAPI 路由定義
+3. 列出目前所有端點
+4. 驗證核心 API 路徑是否存在
+5. 驗證 HTTP 方法是否正確
+6. 發現契約回歸時以非零結束代碼退出
 
-`verify_routes.py`：
+## 提交前品質閘門
 
-* 不啟動 Application Lifespan
+所有修改在提交前至少應通過下列驗證：
+
+```bash
+# 語法編譯檢查
+python -m compileall -q app tests
+
+# 執行單元測試
+python -m pytest -q -m "not integration"
+
+# 驗證路由契約一致性
+python verify_routes.py
+
+# 執行整合測試
+python -m pytest -q -m integration
+
+# 檢查提交格式錯誤
+git diff --check
+```
+
+`verify_routes.py` 的特性：
+
+* 不啟動應用程式生命週期
 * 不呼叫 Laravel API
-* 不需要 Laravel Credentials
+* 不需要 Laravel 憑證
 
 ---
 
-# 25. Route Inventory｜Route Inventory
+# 23. 路由清單工具
 
-`list_all_routes.py` 用於列出完整 Route Inventory。
+`list_all_routes.py` 用於列出完整的路由清單。
 
-與 `verify_routes.py` 不同，它會啟動 FastAPI Lifespan。
+與 `verify_routes.py` 不同，它會啟動 FastAPI 生命週期，因此適用於：
 
-因此適合用於：
+**完整應用程式啟動驗證**
 
-> **完整 Application Startup Verification**
+兩者用途不同：
+
+| 工具 | 用途 |
+| -------------------- | ---------------------------- |
+| `verify_routes.py` | OpenAPI 路由與 HTTP Method 契約驗證 |
+| `list_all_routes.py` | 完整應用程式啟動與路由清單檢查 |
 
 ---
 
-# 26. Configuration｜環境設定
+# 24. 環境設定
 
-建立 `.env`：
+建立 `.env` 檔案：
 
 ```env
 LARAVEL_API_BASE_URL=http://127.0.0.1:8088/api/v1
@@ -1293,31 +1199,31 @@ DEFAULT_TIMEOUT=30
 
 實際環境請依 Laravel API 設定調整。
 
-不要將實際 `.env` 或 Credentials 提交至 Git。
+不要將實際的 `.env` 或憑證提交至 Git。
 
 ---
 
-# 27. Installation｜安裝
+# 25. 安裝步驟
 
-建立 Virtual Environment：
+建立虛擬環境：
 
 ```bash
 python -m venv venv
 ```
 
-Windows：
+Windows 啟動虛擬環境：
 
 ```bash
 venv\Scripts\activate
 ```
 
-Linux / macOS：
+Linux / macOS 啟動虛擬環境：
 
 ```bash
 source venv/bin/activate
 ```
 
-安裝 Dependencies：
+安裝相依套件：
 
 ```bash
 pip install -r requirements.txt
@@ -1325,19 +1231,25 @@ pip install -r requirements.txt
 
 ---
 
-# 28. Run Application｜啟動應用程式
+# 26. 啟動應用程式
 
 ```bash
 uvicorn app.main:app --reload
 ```
 
-預設：
+預設位址：
 
 ```text
 http://127.0.0.1:8000
 ```
 
-Health Check：
+Swagger UI：
+
+```text
+http://127.0.0.1:8000/docs
+```
+
+健康檢查端點：
 
 ```text
 GET /health
@@ -1345,9 +1257,9 @@ GET /health
 
 ---
 
-# 29. CI Verification｜CI 驗證
+# 27. CI 驗證
 
-GitHub Actions Workflow 位於：
+GitHub Actions 工作流程位於：
 
 ```text
 .github/workflows/ci.yml
@@ -1355,18 +1267,18 @@ GitHub Actions Workflow 位於：
 
 在以下情況執行：
 
-* Push 到 `main`
-* Push 到 `develop`
+* Push 到 `main` 分支
+* Push 到 `develop` 分支
 * Pull Request 目標為 `main`
 * Pull Request 目標為 `develop`
 
 CI 不需要：
 
 * Laravel API URL
-* Laravel Credentials
+* Laravel 憑證
 * GitHub Secrets
 
-CI 主要驗證 Integration Application 本身：
+CI 主要驗證整合應用程式本身：
 
 ```text
 Compile
@@ -1382,54 +1294,34 @@ Repository Checks
 
 ---
 
-# 30. Development Verification｜開發驗證
+# 28. 開發驗證流程
 
-修改 Application Code 後，建議依序執行：
+修改應用程式程式碼後，建議依序執行：
 
 ```bash
 python -m compileall -q app tests
-```
 
-```bash
 python -m pytest -q -m "not integration"
-```
 
-```bash
 python verify_routes.py
-```
 
-```bash
 git diff --check
 ```
 
-| Check              | Purpose                      |
-| ------------------ | ---------------------------- |
-| `compileall`       | Python Syntax Validation     |
-| `pytest`           | Automated Regression Tests   |
-| `verify_routes.py` | API Route Contract           |
-| `git diff --check` | Patch / Whitespace Integrity |
+| 檢查項目 | 目的 |
+| ------------------ | ------------- |
+| `compileall` | Python 語法驗證 |
+| `pytest` | 自動化回歸測試 |
+| `verify_routes.py` | API 路由契約驗證 |
+| `git diff --check` | 修補檔與空白字元完整性檢查 |
 
 ---
 
-# 31. Integration Environment｜Laravel Integration Environment
+# 29. 整合環境設定
 
-Integration Tests 使用：
+整合測試使用 `tests/conftest.py` 提供 Laravel API Fixture，並使用 `@pytest.mark.integration` 標記。
 
-```text
-tests/conftest.py
-```
-
-提供 Live Laravel API Fixture。
-
-使用：
-
-```python
-@pytest.mark.integration
-```
-
-標記。
-
-本機啟動 Laravel API 後，設定：
+本機啟動 Laravel API 後，請在 `.env` 中設定：
 
 ```env
 LARAVEL_API_BASE_URL=
@@ -1437,25 +1329,37 @@ LARAVEL_EMAIL=
 LARAVEL_PASSWORD=
 ```
 
-使用 Coffee Tenant 的測試另外需要：
+使用 Coffee Tenant 的測試另外需要設定：
 
 ```env
 LARAVEL_COFFEE_EMAIL=
 LARAVEL_COFFEE_PASSWORD=
-LARAVEL_COFFEE_CAMPAIGN_REWARD_ID=1  # optional; defaults to 1 for the demo data
+LARAVEL_COFFEE_CAMPAIGN_REWARD_ID=1
 ```
 
-執行：
-
-```bash
-python -m pytest -q -m integration
-```
+`LARAVEL_COFFEE_CAMPAIGN_REWARD_ID` 為選擇性設定，預設值為 `1`。
 
 ---
 
-# 32. 目前驗證狀態｜Current Verification Status
+# 30. 驗證狀態與限制
 
-目前 Standalone Verification Flow：
+## 30.1 最近一次驗證結果
+
+```text
+✅ compileall：PASS
+
+✅ Unit Tests：2 passed
+
+✅ Route Contract Verification：28 routes verified
+
+✅ Integration Tests：7 passed, 3 skipped
+```
+
+上述結果代表目前已完成的驗證狀態，不代表所有 API 領域或所有工作流程情境都已完整覆蓋。
+
+## 30.2 驗證流程
+
+完整驗證：
 
 ```bash
 python -m compileall -q app tests
@@ -1464,138 +1368,102 @@ python -m pytest -q -m "not integration"
 
 python verify_routes.py
 
+python -m pytest -q -m integration
+
 git diff --check
 ```
 
 上述驗證可以確認：
 
-* Python Source 可以正常 Compile
-* Local Test Suite 可以執行
-* FastAPI Application 可以正常建立
-* API Routes 正確註冊
-* Core API Contract 存在
-* Git Patch 沒有 Whitespace Error
+* Python 原始碼可以正常編譯
+* 本地測試套件可以執行
+* FastAPI 應用程式可以正常建立
+* API 路由正確註冊
+* 核心 API 契約存在
+* Git 修補檔沒有空白字元錯誤
 
-Integration Tests 則需要額外可用的 Laravel Loyalty API。
+整合測試則需要額外可用的 Laravel Loyalty API。
 
----
+## 30.3 SKIPPED 的意義
 
-# 33. 刻意不做的事情｜What We Deliberately Avoid
+`SKIPPED` 主要代表目前 demo 環境缺少特定測試資料或 Fixture。
 
-本專案目前刻意不增加：
+例如：
 
-* Repository Layer
-* Duplicate Domain Service
-* Abstract Factory
-* 額外 Interface Hierarchy
-* FastAPI-side Idempotency Store
-* FastAPI-side Loyalty Business Rules
-* 複雜 Saga Framework
-* 不必要的 Persistence Layer
+* 指定 reward 已經發放
+* 缺少特定 tenant 測試帳號
+* 缺少可重現的部分失敗資料
 
-原因不是這些技術不好。
+因此：
 
-而是：
-
-> **目前的需求沒有證明它們是必要的。**
-
-架構演進應由實際需求驅動。
-
-只有當系統真的出現：
-
-* 第二個 Backend Provider
-* 多個 External Service
-* Long-running Workflow
-* Compensation Requirement
-* Persistent Workflow State
-* High-volume Resilience Requirement
-
-才引入對應的 Abstraction 或 Infrastructure。
+> **SKIPPED 不等於測試失敗，也不等於該功能已被完整驗證。**
 
 ---
 
-# 34. 設計原則｜Design Principles
+# 31. 設計原則
 
-## 保持責任清晰｜Keep Responsibilities Clear
+## 31.1 保持責任清晰
 
 ```text
-Router       → HTTP Contract
+Router       → HTTP 契約
 
-Client       → API Communication
+Client       → API 通訊
 
-Workflow     → Cross-domain Orchestration
+Workflow     → 跨領域流程編排
 
-Laravel      → Loyalty Business Logic
+Laravel      → Loyalty 業務邏輯
 
-Tests        → Regression Protection
+Tests        → 回歸測試保護
 ```
 
----
+## 31.2 保持一致性
 
-## 保持一致性｜Prefer Consistency
+相同類型的元件：
 
-相同類型的：
-
-* Domain Client
+* 領域 Client
 * Router
 * Workflow
-* Test
+* 測試案例
 
 應採用一致的命名與結構。
 
----
+## 31.3 避免不必要的抽象
 
-## 避免不必要的抽象｜Avoid Unnecessary Abstraction
-
-不要因為「未來可能會需要」就提前建立抽象。
-
-應遵循：
+不要因為「未來可能會需要」就提前建立抽象，應遵循：
 
 > **先解決實際的變化，再抽象實際存在的變化。**
 
----
-
-## 維持單一真相來源｜Keep One Source of Truth
+## 31.4 維持單一真相來源
 
 ```text
-Loyalty Business Rules
-        ↓
-Laravel
+Loyalty 業務規則      → Laravel
 
-Loyalty State
-        ↓
-Laravel
+Loyalty 狀態          → Laravel
 
-Idempotency State
-        ↓
-Laravel
+冪等性狀態            → Laravel
 
-Integration Orchestration
-        ↓
-FastAPI
+整合流程編排          → FastAPI
+```
+
+## 31.5 讓變更可驗證
+
+任何 API 行為變更都應同步確認：
+
+```text
+實作程式碼
+      ↓
+測試案例
+      ↓
+路由契約
+      ↓
+文件
 ```
 
 ---
 
-## 讓變更可驗證｜Make Changes Verifiable
+# 32. 開發理念
 
-任何 API Behaviour Change 都應同步確認：
-
-```text
-Implementation
-      ↓
-Tests
-      ↓
-Route Contract
-      ↓
-Documentation
-```
-
----
-
-# 35. 開發理念｜Development Philosophy
-
-這個專案不以「增加更多 Abstraction」作為工程品質的目標。
+這個專案不以「增加更多抽象」作為工程品質的目標。
 
 核心目標是：
 
@@ -1606,85 +1474,88 @@ Documentation
 * 清楚的命名
 * 一致的結構
 * 明確的責任邊界
-* 穩定的 API Contract
+* 穩定的 API 契約
 * 可重現的測試
-* 清楚的 Failure Boundary
+* 清楚的失敗邊界
 * 與程式碼同步的文件
-* 由實際需求驅動的 Abstraction
+* 由實際需求驅動的抽象
 
 而不是：
 
-* Architecture for Architecture's Sake
-* Premature Abstraction
-* Duplicate Business Logic
-* 不必要的 Infrastructure
+* 為了架構而架構（Architecture for Architecture's Sake）
+* 過早抽象（Premature Abstraction）
+* 重複的業務邏輯
+* 不必要的基礎設施
 
 ---
 
-# 36. 架構總結｜Architecture Summary
+# 33. 架構總結
 
 ```text
                          External Systems
+
                                 │
                                 ▼
-                  ┌─────────────────────────┐
-                  │ FastAPI Integration     │
-                  │                         │
-                  │ Router                  │
-                  │    ↓                    │
-                  │ Workflow                │
-                  │    ↓                    │
-                  │ Domain Clients          │
-                  └────────────┬────────────┘
-                               │
-                               │ REST / JWT
-                               │ Idempotency-Key
-                               ▼
-                  ┌─────────────────────────┐
-                  │ Laravel Loyalty API     │
-                  │                         │
-                  │ Customer Domain         │
-                  │ Point Domain            │
-                  │ Coupon Domain           │
-                  │ Reward Domain            │
-                  │                         │
-                  │ Business Rules          │
-                  │ Idempotency             │
-                  │ Persistence             │
-                  └─────────────────────────┘
+
+                 ┌─────────────────────────┐
+                 │ FastAPI Integration     │
+                 │                         │
+                 │ Router                  │
+                 │    ↓                    │
+                 │ Workflow                │
+                 │    ↓                    │
+                 │ Domain Clients          │
+                 └────────────┬────────────┘
+                              │
+                              │ REST / JWT
+                              │ Idempotency-Key
+                              ▼
+                 ┌─────────────────────────┐
+                 │ Laravel Loyalty API     │
+                 │                         │
+                 │ Customer Domain         │
+                 │ Point Domain            │
+                 │ Coupon Domain           │
+                 │ Reward Domain           │
+                 │                         │
+                 │ Business Rules          │
+                 │ Idempotency             │
+                 │ Persistence             │
+                 └─────────────────────────┘
 ```
 
 整個架構可以濃縮成兩句話：
 
-> **FastAPI 負責 Integration。**
+> **FastAPI 負責整合（Integration）。**
 
-> **Laravel 負責 Loyalty。**
+> **Laravel 負責 Loyalty 領域（Loyalty Domain）。**
 
 FastAPI 可以：
 
 * 呼叫 API
 * 組合 API
-* Mapping API Contract
-* 傳遞 Idempotency-Key
-* 統一 Integration Error Handling
-* 編排 Cross-domain Workflow
+* 映射 API 契約
+* 傳遞 `Idempotency-Key`
+* 統一整合錯誤處理
+* 編排跨領域工作流程
 
 但不應：
 
-* 複製 Loyalty Business Rules
-* 建立第二套 Loyalty State
-* 假裝擁有 Laravel Database Transaction
+* 複製 Loyalty 業務規則
+* 建立第二套 Loyalty 狀態
+* 假裝擁有 Laravel 資料庫交易
 * 為了預期中的未來需求建立大量抽象
 
 當需求真正跨越目前架構的能力邊界，再引入：
 
-* Provider Architecture
+* 提供者架構
 * Adapter
+* Factory
 * Queue
-* Persistent Workflow
-* Compensation
-* Saga
-* Resilience Infrastructure
+* 持久化工作流程
+* 補償交易
+* Saga 模式
+* 彈性性基礎設施
 
 如此可以保持：
 

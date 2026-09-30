@@ -12,9 +12,9 @@ class Settings(BaseSettings):
     laravel_coffee_campaign_reward_id: int = 1
 
     # Reverb WebSocket settings
-    reverb_app_id: str | None = "reverb-app-id"
-    reverb_app_key: str | None = "reverb-app-key"
-    reverb_app_secret: str | None = "reverb-app-secret"
+    reverb_app_id: str | None = None
+    reverb_app_key: str | None = None
+    reverb_app_secret: str | None = None
     reverb_host: str = "127.0.0.1"
     reverb_port: int = 8888
     reverb_scheme: str = "ws"

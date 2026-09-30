@@ -35,19 +35,62 @@
 ## 整體架構圖
 
 ```text
-External System
+Vue Frontend / External System
 
       │
       ▼
 ┌────────────────────────────┐
 │ FastAPI Integration Layer  │
 │                            │
-│  CustomerClient            │
-│  PointClient               │
-│  CouponClient              │
-│  RewardClient              │
-│  Workflow                  │
+│  REST Integration          │
+│   ├─ CustomerClient        │
+│   ├─ PointClient           │
+│   ├─ CouponClient          │
+│   ├─ RewardClient          │
+│   └─ Workflow              │
+│                            │
+│  Realtime Integration      │
+│   └─ WebSocket Gateway     │
+│       ├─ Reverb Client     │
+│       └─ Frontend Endpoint │
 └─────────────┬──────────────┘
+      │
+      ▼
+┌────────────────────────────┐
+│ Laravel Loyalty API        │
+│                            │
+│  Loyalty Domain Logic      │
+│  Laravel Reverb WebSocket  │
+└────────────────────────────┘
+```
+
+## 即時事件流程（Realtime Event Flow）
+
+```text
+Laravel Loyalty
+      │
+      │ Broadcast PointsUpdated
+      ▼
+Laravel Reverb
+      │
+      │ WebSocket Pusher Protocol
+      ▼
+FastAPI Reverb Client
+      │
+      │ Internal Forwarding
+      ▼
+FastAPI WebSocket Endpoint (/ws/points/{tenant_id}/{member_id})
+      │
+      ▼
+Vue Frontend
+```
+
+### 元件職責說明：
+- **Laravel Loyalty**: 負責產生 Loyalty 領域事件 (`PointsUpdated`)
+- **Laravel Reverb**: 負責 WebSocket 廣播，實作 Pusher 協定
+- **FastAPI Reverb Client**: 作為 WebSocket 用戶端連接 Reverb，接收即時事件
+- **FastAPI WebSocket Endpoint**: 提供前端連線，轉發事件給對應的使用者
+- **Vue Frontend**: 接收即時更新，更新 UI 顯示最新積分狀態
               │
               │ REST API
               │ JWT

@@ -1,18 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
+import hashlib
+import hmac
 from typing import Any, Callable, Dict, Set
 from urllib.parse import urlencode
+import httpx
 
 import websockets
 from websockets.exceptions import ConnectionClosedError
 
 from app.config import settings
-from app.core.dependencies import laravel_client
+from app.client.base import LaravelClient
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +24,7 @@ class ReverbClient:
     連接 Laravel Reverb 伺服器，接收廣播事件並轉發給前端連線
     """
 
-    def __init__(self):
+    def __init__(self, laravel_client: LaravelClient | None = None):
         self.app_id = settings.reverb_app_id
         self.app_key = settings.reverb_app_key
         self.app_secret = settings.reverb_app_secret
@@ -32,12 +33,14 @@ class ReverbClient:
         self.scheme = settings.reverb_scheme
         self.auth_endpoint = settings.reverb_auth_endpoint
 
+        self.laravel_client = laravel_client
         self.ws = None
         self.connected = False
         self.subscribed_channels: Set[str] = set()
         self.connection_retries = 0
         self.max_retries = 10
         self.retry_delay = 1.0
+        self.socket_id: str | None = None
 
         # 前端連線管理：{channel_name: {websocket_connection1, websocket_connection2, ...}}
         self.frontend_connections: Dict[str, Set[Any]] = {}
@@ -58,29 +61,105 @@ class ReverbClient:
         return f"{self.scheme}://{self.host}:{self.port}/app/{self.app_key}?{query_string}"
 
     def generate_auth_signature(self, channel_name: str, socket_id: str) -> str:
-        """為私有頻道產生授權簽名"""
+        """
+        產生 Pusher/Reverb 相容的授權簽名 - 維持向後相容性
+        當沒有提供 LaravelClient 時，可以使用這個方法生成客戶端簽名
+        """
         string_to_sign = f"{socket_id}:{channel_name}"
-        signature = hmac.new(
+        hmac_signature = hmac.new(
             self.app_secret.encode(),
             string_to_sign.encode(),
             hashlib.sha256
         ).hexdigest()
-        return f"{self.app_key}:{signature}"
+        return f"{self.app_key}:{hmac_signature}"
 
-    async def subscribe_to_channel(self, channel_name: str, socket_id: str):
-        """訂閱特定頻道"""
+    async def get_broadcasting_auth(self, channel_name: str, socket_id: str, tenant_id: int | None = None) -> str:
+        """
+        向 Laravel /broadcasting/auth 端點請求授權，獲取合法的auth簽名
+        遵循Laravel官方的broadcasting認證流程
+        """
+        if not self.laravel_client or not self.laravel_client._token:
+            raise Exception("LaravelClient must be authenticated before subscribing to private channels via Laravel auth")
+
+        # 準備要傳送給Laravel broadcasting auth的參數
+        payload = {
+            'socket_id': socket_id,
+            'channel_name': channel_name
+        }
+
+        # 複製LaravelClient的headers並加入X-Tenant-ID（如果有提供）
+        headers = self.laravel_client.headers.copy()
+        # broadcasting auth需要使用form-data格式，所以覆蓋Content-Type
+        headers['Content-Type'] = 'application/x-www-form-urlencoded'
+        # 只要tenant_id不是None就加入X-Tenant-ID header（包括0這個合法值）
+        if tenant_id is not None:
+            headers['X-Tenant-ID'] = str(tenant_id)
+
+        try:
+            # 輸出除錯資訊：送出的請求詳情
+            logger.info(f"=== Broadcasting auth request details ===")
+            logger.info(f"URL: {self.auth_endpoint}")
+            logger.info(f"Payload: {payload}")
+            # 只輸出非敏感的headers資訊
+            safe_headers = {k: v for k, v in headers.items() if k not in ['Authorization']}
+            if 'Authorization' in headers:
+                safe_headers['Authorization'] = 'Bearer <token>'  # 隱藏實際token
+            logger.info(f"Headers: {safe_headers}")
+            
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.post(
+                    self.auth_endpoint,
+                    data=payload,  # Laravel的broadcasting auth接收form-data格式
+                    headers=headers
+                )
+                # 輸出回應詳情
+                logger.info(f"=== Broadcasting auth response details ===")
+                logger.info(f"HTTP Status: {resp.status_code}")
+                logger.info(f"Response body: {resp.text}")
+                resp.raise_for_status()
+                auth_data = resp.json()
+                logger.info(f"Successfully obtained broadcasting auth for channel {channel_name}")
+                return auth_data['auth']
+        except httpx.HTTPError as e:
+            logger.error(f"Failed to get broadcasting auth: {e}, Response: {resp.text if 'resp' in locals() else 'N/A'}")
+            raise Exception(f"Broadcasting auth failed for channel {channel_name}: {str(e)}")
+
+    async def subscribe_to_channel(self, channel_name: str, socket_id: str, tenant_id: int | None = None):
+        """訂閱特定頻道 - 支援兩種認證方式：
+        1. 如果有提供laravel_client，使用Laravel /broadcasting/auth 進行授權（生產環境使用）
+        2. 如果沒有提供laravel_client，使用客戶端生成簽名的方式（向後相容性，單元測試使用）
+        """
         if channel_name in self.subscribed_channels:
             logger.info(f"Already subscribed to {channel_name}")
             return
 
-        # 發送訂閱訊息
+        # 處理私有頻道
+        auth = None
+        if channel_name.startswith('private-'):
+            # 檢查是否有laravel_client可用，如果有，使用Laravel的broadcasting auth
+            if self.laravel_client and self.laravel_client._token:
+                # 傳送完整的channel_name給Laravel broadcasting auth（包含private-前綴）
+                # Laravel的broadcasting auth需要完整的頻道名稱來進行認證
+                auth = await self.get_broadcasting_auth(channel_name, socket_id, tenant_id)
+            else:
+                # 沒有laravel_client，使用傳統的客戶端生成簽名方式以維持向後相容性
+                auth = self.generate_auth_signature(channel_name, socket_id)
+                logger.info(f"Using client-side auth signature for channel {channel_name}")
+        else:
+            # 公共頻道不需要授權
+            auth = None
+
+        # 發送訂閱訊息 - 符合Pusher/Reverb協議
         subscribe_message = {
             'event': 'pusher:subscribe',
             'data': {
                 'channel': channel_name,
-                'auth': self.generate_auth_signature(channel_name, socket_id),
             }
         }
+
+        # 如果有auth，加入到訂閱請求中
+        if auth:
+            subscribe_message['data']['auth'] = auth
 
         if self.ws:
             await self.ws.send(json.dumps(subscribe_message))

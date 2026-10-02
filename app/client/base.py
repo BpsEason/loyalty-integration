@@ -30,16 +30,24 @@ class LaravelClient:
         self.timeout = settings.default_timeout
         self._token: str | None = None
         self._token_type: str = "Bearer"
+        self._tenant_id: str | None = None
 
     @property
     def headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
+            "Connection": "close",
         }
         if self._token:
             headers["Authorization"] = f"{self._token_type} {self._token}"
+        if self._tenant_id:
+            headers["X-Tenant-ID"] = self._tenant_id
         return headers
+
+    def set_tenant_id(self, tenant_id: int | str):
+        """設定租戶ID，會自動加入到所有請求的X-Tenant-ID header中"""
+        self._tenant_id = str(tenant_id)
 
     async def login(self, email: str | None = None, password: str | None = None) -> dict:
         email = email or settings.laravel_email
@@ -170,6 +178,22 @@ class LaravelClient:
 
         if resp.status_code not in allowed:
             message = data.get("message") if isinstance(data, dict) else str(data)
+            # 輸出完整的 Laravel 錯誤信息，包括 stack trace
+            if isinstance(data, dict):
+                print(f"\n=== Laravel 完整錯誤回應 ===")
+                print(f"狀態碼: {resp.status_code}")
+                print(f"訊息: {message}")
+                if 'exception' in data:
+                    print(f"異常類型: {data.get('exception')}")
+                if 'file' in data:
+                    print(f"檔案: {data.get('file')}")
+                if 'line' in data:
+                    print(f"行號: {data.get('line')}")
+                if 'trace' in data:
+                    print("堆疊追蹤 (前10行):")
+                    for i, trace in enumerate(data.get('trace', [])[:10]):
+                        print(f"  {i+1}. {trace.get('file')}:{trace.get('line')} - {trace.get('function')}")
+                print(f"===========================\n")
             raise LaravelAPIError(
                 message=message or f"HTTP {resp.status_code}",
                 status_code=resp.status_code,

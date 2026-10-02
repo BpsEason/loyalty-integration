@@ -11,14 +11,14 @@ class Settings(BaseSettings):
     laravel_coffee_password: str | None = None
     laravel_coffee_campaign_reward_id: int = 1
 
-    # Reverb WebSocket settings
+    # Reverb WebSocket settings - 與Laravel .env設定完全一致
     reverb_app_id: str | None = None
     reverb_app_key: str | None = None
     reverb_app_secret: str | None = None
     reverb_host: str = "127.0.0.1"
     reverb_port: int = 8888
     reverb_scheme: str = "ws"
-    reverb_auth_endpoint: str = "http://localhost:8088/broadcasting/auth"
+    reverb_auth_endpoint: str = "http://localhost:8088/api/v1/broadcasting/auth"
 
     default_timeout: float = 30.0
 

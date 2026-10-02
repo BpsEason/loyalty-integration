@@ -32,10 +32,14 @@ async def coffee_client():
 
 @pytest.fixture
 async def customer_id(authenticated_client):
-    """取得一個可用的 customer_id 供測試使用。"""
+    """取得一個可用的 customer_id 供測試使用，確保該客戶有點數帳戶。"""
     client = authenticated_client
     customer_client = CustomerClient(client)
-    customers = await customer_client.list(per_page=1)
+    from app.client.point import PointClient
+    point_client = PointClient(client)
+    
+    # 先取得較多客戶來尋找有點數帳戶的客戶
+    customers = await customer_client.list(per_page=20)
 
     data = customers.get("data", [])
     if isinstance(data, dict):
@@ -46,7 +50,17 @@ async def customer_id(authenticated_client):
     if not items:
         pytest.skip("No available customers to test with.")
 
-    return items[0]["id"]
+    # 遍歷客戶找到有點數帳戶的客戶
+    for customer in items:
+        try:
+            await point_client.get_balance(customer["id"])
+            # 如果能成功取得餘額，說明這個客戶有點數帳戶
+            return customer["id"]
+        except Exception:
+            continue
+
+    # 如果找不到任何有點數帳戶的客戶
+    pytest.skip("No customers with point account found.")
 
 
 @pytest.fixture

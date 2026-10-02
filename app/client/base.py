@@ -25,19 +25,47 @@ class LaravelClient:
     負責 JWT、Idempotency-Key、統一錯誤處理。
     """
 
-    def __init__(self):
+    def __init__(self, limits: httpx.Limits | None = None):
         self.base_url = settings.laravel_api_base_url.rstrip("/")
         self.timeout = settings.default_timeout
         self._token: str | None = None
         self._token_type: str = "Bearer"
         self._tenant_id: str | None = None
+        # 建立共享的 AsyncClient 與連接池
+        self._client: httpx.AsyncClient | None = None
+        self._limits = limits
+
+    async def __aenter__(self):
+        """支援 async with 語法，確保資源正確管理"""
+        self._client = httpx.AsyncClient(
+            base_url=self.base_url,
+            timeout=self.timeout,
+            limits=self._limits or httpx.Limits()
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """結束時正確關閉 HTTP client"""
+        if self._client:
+            await self._client.aclose()
+            self._client = None
+
+    def _ensure_client(self) -> httpx.AsyncClient:
+        """確保 client 已初始化，如果未使用 async with 則自動建立"""
+        if self._client is None:
+            self._client = httpx.AsyncClient(
+                base_url=self.base_url,
+                timeout=self.timeout,
+                limits=self._limits or httpx.Limits()
+            )
+        return self._client
 
     @property
     def headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json",
-            "Connection": "close",
+            # 移除 Connection: close 以支援 HTTP 連線复用，讓連接池正常運作
         }
         if self._token:
             headers["Authorization"] = f"{self._token_type} {self._token}"
@@ -59,11 +87,11 @@ class LaravelClient:
             )
 
         try:
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
-                resp = await client.post(
-                    "/auth/login",
-                    json={"email": email, "password": password},
-                )
+            client = self._ensure_client()
+            resp = await client.post(
+                "/auth/login",
+                json={"email": email, "password": password},
+            )
         except httpx.TimeoutException as exc:
             raise LaravelAPIError(
                 message=f"Laravel API timeout: {exc}",
@@ -146,14 +174,14 @@ class LaravelClient:
             headers["Idempotency-Key"] = idempotency_key
 
         try:
-            async with httpx.AsyncClient(base_url=self.base_url, timeout=self.timeout) as client:
-                resp = await client.request(
-                    method=method.upper(),
-                    url=path,
-                    json=json,
-                    params=params,
-                    headers=headers,
-                )
+            client = self._ensure_client()
+            resp = await client.request(
+                method=method.upper(),
+                url=path,
+                json=json,
+                params=params,
+                headers=headers,
+            )
         except httpx.TimeoutException as exc:
             # Timeout 不代表 Laravel 一定沒有完成 Mutation；
             # 呼叫端應透過 Idempotency-Key 保護可安全重試的請求。

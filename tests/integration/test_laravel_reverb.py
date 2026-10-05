@@ -1,7 +1,7 @@
 import asyncio
 import json
 import pytest
-import httpx
+import httpx2 as httpx
 from app.websocket.reverb_client import ReverbClient
 from app.config import settings
 import websockets

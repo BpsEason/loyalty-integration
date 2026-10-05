@@ -7,7 +7,7 @@ import hashlib
 import hmac
 from typing import Any, Callable, Dict, Set
 from urllib.parse import urlencode
-import httpx
+import httpx2 as httpx
 
 import websockets
 from websockets.exceptions import ConnectionClosedError

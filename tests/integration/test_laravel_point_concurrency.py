@@ -52,7 +52,7 @@ async def test_point_earn_concurrency(
     test_customer_id = customer_id
     
     # 建立共享的 HTTP client，使用連接池來控制併發連線數，避免每次請求都建立新 TCP 連線
-    import httpx
+    import httpx2 as httpx
     limits = httpx.Limits(
         max_connections=concurrency,
         max_keepalive_connections=concurrency,

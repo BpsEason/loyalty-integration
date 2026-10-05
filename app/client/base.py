@@ -3,7 +3,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-import httpx
+import httpx2 as httpx
 from rich.console import Console
 
 from app.config import settings

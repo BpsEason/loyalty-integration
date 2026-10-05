@@ -71,8 +71,14 @@ async def test_point_earn_concurrency(
         initial_balance_resp = await point_client.get_balance(test_customer_id)
         initial_balance = initial_balance_resp["data"]["balance"]
         initial_transactions_resp = await point_client.list_transactions(test_customer_id, per_page=1000)
-        initial_transactions = initial_transactions_resp["data"]
-        initial_transaction_count = len(initial_transactions)
+        # 處理 Laravel 標準分頁回應格式：{"data": {"data": [...], "meta": {"total": ...}}}
+        initial_transactions_data = initial_transactions_resp["data"]
+        initial_transactions = initial_transactions_data.get("data", []) if isinstance(initial_transactions_data, dict) else initial_transactions_data
+        # 優先使用 API 提供的總筆數，避免單頁 truncation 問題
+        if isinstance(initial_transactions_data, dict) and "meta" in initial_transactions_data and "total" in initial_transactions_data["meta"]:
+            initial_transaction_count = initial_transactions_data["meta"]["total"]
+        else:
+            initial_transaction_count = len(initial_transactions)
 
         # 建立 Semaphore 限制最大併發數
         semaphore = asyncio.Semaphore(concurrency)
@@ -102,8 +108,14 @@ async def test_point_earn_concurrency(
         final_balance_resp = await point_client.get_balance(test_customer_id)
         final_balance = final_balance_resp["data"]["balance"]
         final_transactions_resp = await point_client.list_transactions(test_customer_id, per_page=1000)
-        final_transactions = final_transactions_resp["data"]
-        final_transaction_count = len(final_transactions)
+        # 處理 Laravel 標準分頁回應格式：{"data": {"data": [...], "meta": {"total": ...}}}
+        final_transactions_data = final_transactions_resp["data"]
+        final_transactions = final_transactions_data.get("data", []) if isinstance(final_transactions_data, dict) else final_transactions_data
+        # 優先使用 API 提供的總筆數，避免單頁 truncation 問題
+        if isinstance(final_transactions_data, dict) and "meta" in final_transactions_data and "total" in final_transactions_data["meta"]:
+            final_transaction_count = final_transactions_data["meta"]["total"]
+        else:
+            final_transaction_count = len(final_transactions)
 
         # 驗證交易ID不重複
         transaction_ids = [t["id"] for t in successful_transactions]
@@ -170,8 +182,14 @@ async def test_point_redeem_concurrency(
             pytest.skip(f"測試客戶餘額不足，需要至少 {10 * redeem_amount} 點，目前只有 {initial_balance} 點")
 
         initial_transactions_resp = await point_client.list_transactions(test_customer_id, per_page=1000)
-        initial_transactions = initial_transactions_resp["data"]
-        initial_transaction_count = len(initial_transactions)
+        # 處理 Laravel 標準分頁回應格式：{"data": {"data": [...], "meta": {"total": ...}}}
+        initial_transactions_data = initial_transactions_resp["data"]
+        initial_transactions = initial_transactions_data.get("data", []) if isinstance(initial_transactions_data, dict) else initial_transactions_data
+        # 優先使用 API 提供的總筆數，避免單頁 truncation 問題
+        if isinstance(initial_transactions_data, dict) and "meta" in initial_transactions_data and "total" in initial_transactions_data["meta"]:
+            initial_transaction_count = initial_transactions_data["meta"]["total"]
+        else:
+            initial_transaction_count = len(initial_transactions)
 
         # 開始 redeem 測試
         semaphore = asyncio.Semaphore(concurrency)
@@ -199,8 +217,14 @@ async def test_point_redeem_concurrency(
         final_balance_resp = await point_client.get_balance(test_customer_id)
         final_balance = final_balance_resp["data"]["balance"]
         final_transactions_resp = await point_client.list_transactions(test_customer_id, per_page=1000)
-        final_transactions = final_transactions_resp["data"]
-        final_transaction_count = len(final_transactions)
+        # 處理 Laravel 標準分頁回應格式：{"data": {"data": [...], "meta": {"total": ...}}}
+        final_transactions_data = final_transactions_resp["data"]
+        final_transactions = final_transactions_data.get("data", []) if isinstance(final_transactions_data, dict) else final_transactions_data
+        # 優先使用 API 提供的總筆數，避免單頁 truncation 問題
+        if isinstance(final_transactions_data, dict) and "meta" in final_transactions_data and "total" in final_transactions_data["meta"]:
+            final_transaction_count = final_transactions_data["meta"]["total"]
+        else:
+            final_transaction_count = len(final_transactions)
 
         # 核心驗證：確保不會超額扣點
         assert success_count * redeem_amount <= initial_balance, f"超額扣點：成功扣減 {success_count * redeem_amount} 點，超過初始餘額 {initial_balance} 點"

@@ -152,22 +152,31 @@ async def test_laravel_reverb_full_flow():
                 print(f"Channel: {message_data.get('channel')}")
                 print(f"Data: {json.dumps(message_data.get('data'), indent=2)}")
                 
-                # 繼續檢查錯誤消息
+                # 繼續檢查錯誤消息，如果有立即失敗
                 if message_data.get('event') == 'pusher:error':
-                    print(f"❌ Pusher error: {json.dumps(message_data.get('data'), indent=2)}")
+                    error_msg = f"❌ Pusher error during event waiting: {json.dumps(message_data.get('data'), indent=2)}"
+                    print(error_msg)
+                    assert False, error_msg
                 
                 # 檢查是否是我們等待的事件
                 if message_data.get('event') == 'points.updated':
                     event_data = json.loads(message_data['data']) if isinstance(message_data['data'], str) else message_data['data']
                     received_channel = message_data.get('channel')
                     
-                    print(f"\n=== Received real event from Laravel Reverb ===")
+                    print(f"\n=== Received points.updated event ===")
                     print(f"Event: {message_data['event']}")
                     print(f"Channel: {received_channel}")
                     print(f"Payload: {json.dumps(event_data, indent=2)}")
                     
-                    # 驗證所有必要欄位都存在且正確
-                    if received_channel == full_channel_name:
+                    # 只處理符合本次交易條件的事件：正確的頻道、member_id 和 transaction_id
+                    # 忽略其他舊的或不相關的 points.updated 事件，繼續等待正確的事件
+                    if (
+                        received_channel == full_channel_name
+                        and event_data.get('member_id') == member_id
+                        and event_data.get('transaction_id') == transaction_id
+                    ):
+                        print(f"\n=== Received correct event for current transaction ===")
+                        # 驗證所有必要欄位都存在且正確
                         assert event_data['member_id'] == member_id
                         assert event_data['transaction_id'] == transaction_id
                         assert event_data['delta'] == 10
@@ -176,6 +185,10 @@ async def test_laravel_reverb_full_flow():
                         
                         event_received = True
                         break
+                    else:
+                        # 記錄但忽略不符合條件的事件，繼續等待正確的事件
+                        print(f"⚠️ Ignoring old/irrelevant points.updated event (waiting for our transaction)")
+                        continue
                     
             except asyncio.TimeoutError:
                 continue

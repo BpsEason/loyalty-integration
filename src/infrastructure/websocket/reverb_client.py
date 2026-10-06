@@ -292,6 +292,15 @@ class ReverbClient:
                 logger.error("Max retries reached, giving up connection to Reverb")
                 break
 
+    async def disconnect(self):
+        """中斷與 Reverb 伺服器的連線"""
+        if self.ws:
+            await self.ws.close()
+            self.ws = None
+            self.connected = False
+            self.socket_id = None
+            logger.info("Disconnected from Reverb server")
+
     async def ensure_connected(self):
         """確保已連線，如果未連線則嘗試連線"""
         if not self.connected and self.ws is None:

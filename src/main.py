@@ -28,13 +28,14 @@ logger = get_logger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    reverb_task = None
     try:
         await laravel_client.login()
         logger.info("Laravel API 登入成功，服務準備就緒")
         
         # 啟動 Reverb WebSocket 連線
         if settings.reverb_app_id and settings.reverb_app_key and settings.reverb_app_secret:
-            asyncio.create_task(reverb_client.connect())
+            reverb_task = asyncio.create_task(reverb_client.connect())
             logger.info("Reverb WebSocket 用戶端已啟動", extra={
                 "reverb_host": settings.reverb_host,
                 "reverb_port": settings.reverb_port
@@ -45,6 +46,14 @@ async def lifespan(app: FastAPI):
         logger.error("啟動時登入失敗", exc_info=True, extra={"error": str(e)})
         raise
     yield
+    # Shutdown 流程：優雅關閉 Reverb 連線
+    if reverb_task and not reverb_task.done():
+        reverb_task.cancel()
+        try:
+            await reverb_task
+        except asyncio.CancelledError:
+            logger.info("Reverb WebSocket task cancelled successfully")
+        await reverb_client.disconnect()
 
 
 def create_app() -> FastAPI:
@@ -57,6 +66,18 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(LaravelAPIError)
     async def laravel_api_error_handler(request: Request, exc: LaravelAPIError):
+        # 清理敏感資訊
+        payload = exc.context.get("payload")
+        safe_payload = None
+        if payload:
+            safe_payload = payload.copy() if isinstance(payload, dict) else payload
+            if isinstance(safe_payload, dict):
+                # 移除敏感欄位
+                sensitive_fields = {'password', 'token', 'jwt', 'authorization', 'secret', 'access_token', 'refresh_token'}
+                for field in sensitive_fields:
+                    if field in safe_payload:
+                        safe_payload[field] = '<redacted>'
+        
         logger.error(
             "Laravel API 呼叫失敗",
             exc_info=True,
@@ -65,7 +86,7 @@ def create_app() -> FastAPI:
                 "message": exc.message,
                 "status_code": exc.status_code,
                 "endpoint": exc.context.get("endpoint"),
-                "payload": exc.context.get("payload")
+                "payload": safe_payload
             }
         )
         return JSONResponse(
@@ -87,7 +108,7 @@ def create_app() -> FastAPI:
         )
         return JSONResponse(
             status_code=400,
-            content={"detail": exc.message, "context": exc.context},
+            content={"detail": exc.message},
         )
 
     @app.exception_handler(Exception)
@@ -121,7 +142,7 @@ def create_app() -> FastAPI:
         return {
             "service": "Loyalty Integration API",
             "status": "ok",
-            "laravel_connected": laravel_client._token is not None,
+            "laravel_connected": laravel_client.is_authenticated,
         }
 
     @app.get("/health")

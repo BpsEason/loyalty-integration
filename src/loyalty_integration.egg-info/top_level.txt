@@ -1,8 +1,8 @@
 __init__
-api
+application
 config
 core
 domain
 infrastructure
-loyalty_integration
+interfaces
 main

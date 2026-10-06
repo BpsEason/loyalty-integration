@@ -5,7 +5,7 @@ import base64
 import json
 import time
 import uuid
-from typing import Any, cast
+from typing import Any
 
 import httpx2 as httpx
 
@@ -83,6 +83,10 @@ class LaravelClient:
         return self._client
 
     @property
+    def is_authenticated(self) -> bool:
+        return self._token is not None
+
+    @property
     def headers(self) -> dict[str, str]:
         headers = {
             "Accept": "application/json",
@@ -133,15 +137,26 @@ class LaravelClient:
         except ValueError:
             data = {"raw": resp.text}
 
-        if resp.status_code != 200 or not isinstance(data, dict) or not data.get("success"):
+        if resp.status_code != 200 or not isinstance(data, dict):
             raise LaravelAPIError(
                 message=data.get("message", "Login failed") if isinstance(data, dict) else "Login failed",
                 status_code=resp.status_code,
                 payload=data,
             )
 
-        token_data = data["data"]
-        self.set_token(token_data["access_token"], token_data.get("token_type", "Bearer"))
+        # 處理 Laravel 標準 API 回應格式
+        if "data" in data and "access_token" in data["data"]:
+            token_data = data["data"]
+            self.set_token(token_data["access_token"], token_data.get("token_type", "Bearer"))
+        # 備用：處理舊版格式
+        elif "access_token" in data:
+            self.set_token(data["access_token"], data.get("token_type", "Bearer"))
+        else:
+            raise LaravelAPIError(
+                message="Invalid login response: missing access_token",
+                status_code=resp.status_code,
+                payload=data,
+            )
 
         logger.info("Laravel API 登入成功", extra={"email": email, "base_url": self.base_url})
         return token_data
@@ -193,7 +208,7 @@ class LaravelClient:
             except ValueError:
                 data = {"raw": resp.text}
 
-            if resp.status_code != 200 or not isinstance(data, dict) or not data.get("success"):
+            if resp.status_code != 200 or not isinstance(data, dict):
                 raise LaravelAPIError(
                     message=data.get("message", "Refresh failed") if isinstance(data, dict) else "Refresh failed",
                     status_code=resp.status_code,
@@ -204,7 +219,17 @@ class LaravelClient:
             # 更新本機儲存的 token - 遵循 Laravel 標準 API 回傳格式
             if "data" in data and "access_token" in data["data"]:
                 self.set_token(data["data"]["access_token"], data["data"].get("token_type", "Bearer"))
-                logger.info("Token refresh successful", extra={"new_expires_at": self._token_expires_at})
+                logger.info("Token refresh successful")
+            elif "access_token" in data:
+                self.set_token(data["access_token"], data.get("token_type", "Bearer"))
+                logger.info("Token refresh successful")
+            else:
+                raise LaravelAPIError(
+                    message="Invalid refresh response: missing access_token",
+                    status_code=resp.status_code,
+                    payload=data,
+                    endpoint="/auth/refresh",
+                )
             return data
 
     async def logout(self) -> dict[str, Any]:
@@ -265,7 +290,6 @@ class LaravelClient:
         params: dict[str, Any] | None = None,
         idempotency_key: str | None = None,
         expect_status: int | list[int] | None = None,
-        has_retried_401: bool = False,  # 追蹤是否已經重試過401，避免無限循環
     ) -> dict[str, Any]:
         # 刻意在送出 request 前拒絕未認證請求，
         # 避免明知缺少 Authentication Context 仍呼叫 Laravel API。
@@ -290,8 +314,14 @@ class LaravelClient:
         retry_delay = 2  # 初始延遲2秒
         attempt = 0
         method_upper = method.upper()
+        has_retried_401 = False
+        last_exception: Exception | None = None
+        last_response: httpx.Response | None = None
         
         while attempt < max_retries:
+            last_exception = None
+            last_response = None
+            
             try:
                 client = self._ensure_client()
                 resp = await client.request(
@@ -301,21 +331,18 @@ class LaravelClient:
                     params=params,
                     headers=headers,
                 )
+                last_response = resp
                 
-                # 處理401未授權 - 嘗試刷新token後重試一次
+                # 處理401未授權 - 只嘗試刷新token後重試一次
                 if resp.status_code == 401 and not has_retried_401:
                     logger.warning("Received 401, attempting to refresh token and retry once", extra={"endpoint": path})
+                    has_retried_401 = True
                     await self.refresh()
-                    # 重遞歸呼叫自己，但標記已經重試過401，避免無限循環
-                    return await self.request(
-                        method,
-                        path,
-                        json=json,
-                        params=params,
-                        idempotency_key=idempotency_key,
-                        expect_status=expect_status,
-                        has_retried_401=True,
-                    )
+                    # 刷新後更新headers，然後繼續重試一次
+                    headers = self.headers.copy()
+                    if idempotency_key:
+                        headers["Idempotency-Key"] = idempotency_key
+                    continue  # 進入下一次循環，只會再執行一次
                 
                 # 如果請求成功，跳出循環
                 allowed = expect_status or [200, 201]
@@ -334,6 +361,7 @@ class LaravelClient:
                     break
                     
             except self.RETRYABLE_EXCEPTIONS as exc:
+                last_exception = exc
                 # 只有可重試的暫時性網路例外才進行重試
                 # 修改操作(Mutation)必須有Idempotency-Key才能重試
                 if method_upper in self.MUTATION_METHODS and idempotency_key is None:
@@ -363,19 +391,29 @@ class LaravelClient:
                 retry_delay = min(retry_delay * 2, 10)  # 最大延遲10秒
             else:
                 # 已達到最大重試次數，重新拋出最後的異常
-                if 'exc' in locals():
+                if last_exception:
                     raise LaravelAPIError(
-                        message=f"Max retries exceeded. Last error: {exc}",
-                        status_code=502 if isinstance(exc, httpx.RequestError) else 504,
+                        message=f"Max retries exceeded. Last error: {last_exception}",
+                        status_code=502 if isinstance(last_exception, httpx.RequestError) else 504,
                         endpoint=path,
-                    ) from exc
+                    ) from last_exception
                 else:
                     # 如果是狀態碼導致的重試失敗
                     raise LaravelAPIError(
-                        message=f"Max retries exceeded. Last status code: {resp.status_code}",
-                        status_code=resp.status_code,
+                        message=f"Max retries exceeded. Last status code: {last_response.status_code}",
+                        status_code=last_response.status_code,
                         endpoint=path,
+                        payload=last_response.text if last_response else None,
                     )
+
+        # 確保resp變數存在
+        if last_response is None:
+            raise LaravelAPIError(
+                "No response received from Laravel API",
+                status_code=502,
+                endpoint=path,
+            )
+        resp = last_response
 
         try:
             data = resp.json()
@@ -388,21 +426,15 @@ class LaravelClient:
 
         if resp.status_code not in allowed:
             message = data.get("message") if isinstance(data, dict) else str(data)
-            # 輸出完整的 Laravel 錯誤信息到日誌，包括 stack trace
-            if isinstance(data, dict):
-                logger.error(
-                    "Laravel API 回傳錯誤",
-                    extra={
-                        "endpoint": path,
-                        "status_code": resp.status_code,
-                        "error_message": message,
-                        "exception": data.get('exception'),
-                        "file": data.get('file'),
-                        "line": data.get('line'),
-                        "trace": data.get('trace', [])[:10] if 'trace' in data else [],
-                        "payload": data
-                    }
-                )
+            # 記錄錯誤但不洩露敏感的stack trace資訊到生產日誌
+            logger.error(
+                "Laravel API 回傳錯誤",
+                extra={
+                    "endpoint": path,
+                    "status_code": resp.status_code,
+                    "error_message": message,
+                }
+            )
             raise LaravelAPIError(
                 message=message or f"HTTP {resp.status_code}",
                 status_code=resp.status_code,

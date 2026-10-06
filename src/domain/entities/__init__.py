@@ -1,0 +1,1 @@
+"""Domain entities - pure business objects with no framework dependencies"""

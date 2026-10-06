@@ -1,6 +1,6 @@
 
 from fastapi.testclient import TestClient
-from app.main import create_app
+from src.main import create_app
 
 def run_verification():
     try:

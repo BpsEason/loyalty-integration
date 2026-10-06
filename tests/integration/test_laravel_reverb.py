@@ -2,11 +2,11 @@ import asyncio
 import json
 import pytest
 import httpx2 as httpx
-from app.websocket.reverb_client import ReverbClient
-from app.config import settings
+from src.infrastructure.websocket.reverb_client import ReverbClient
+from src.config.settings import settings
 import websockets
-from app.client.point import PointClient
-from app.client.customer import CustomerClient
+from src.infrastructure.clients.point import PointClient
+from src.infrastructure.clients.customer import CustomerClient
 
 
 @pytest.mark.integration
@@ -18,7 +18,7 @@ async def test_laravel_reverb_full_flow():
     絕不使用 skip，連接失敗或未收到事件則測試直接失敗
     """
     # 1. 初始化客戶端，確認 Laravel API 可連接
-    from app.client.base import LaravelClient
+    from src.infrastructure.clients.base import LaravelClient
     laravel_client = LaravelClient()
     await laravel_client.login()
     # 取得登入使用者的真實資訊，確保使用正確的tenant和member ID

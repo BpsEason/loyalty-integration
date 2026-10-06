@@ -1,7 +1,7 @@
 import pytest
 
-from app.client.base import LaravelAPIError, LaravelClient
-from app.client.reward import RewardClient
+from src.infrastructure.clients.base import LaravelAPIError, LaravelClient
+from src.infrastructure.clients.reward import RewardClient
 
 
 pytestmark = pytest.mark.integration

@@ -9,7 +9,7 @@ Route Contract Verification.
 - Local API contract verification
 """
 
-from app.main import create_app
+from src.main import create_app
 
 
 def get_all_routes(app):

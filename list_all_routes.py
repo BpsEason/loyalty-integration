@@ -3,7 +3,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from fastapi.routing import APIRoute, APIRouter
 from fastapi.testclient import TestClient
-from app.main import app
+from src.main import app
 
 # Load environment variables from .env file
 load_dotenv()
@@ -82,7 +82,7 @@ def main():
 
         # 列出所有匯入的 router 是否有自己的路由
         print("\n=== 各Router內部路由檢查 ===")
-        from app.routers import auth_router, customers_router, points_router, coupons_router, rewards_router, workflows_router
+        from src.api.routers import auth_router, customers_router, points_router, coupons_router, rewards_router, workflows_router
         routers = [
             ("auth_router", auth_router),
             ("customers_router", customers_router),

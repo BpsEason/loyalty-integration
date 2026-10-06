@@ -8,15 +8,15 @@ import hashlib
 import hmac
 from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
-from app.websocket.reverb_client import ReverbClient
-from app.main import app
+from src.infrastructure.websocket.reverb_client import ReverbClient
+from src.main import app
 
 
 @pytest.mark.asyncio
 async def test_reverb_client_connection(monkeypatch):
     """測試 ReverbClient 基本連線功能 - 使用 monkeypatch 確保測試不受環境變數影響"""
     # 直接在建立client後覆寫屬性，避免pydantic-settings的預設值干擾
-    from app.websocket.reverb_client import ReverbClient
+    from src.infrastructure.websocket.reverb_client import ReverbClient
     
     client = ReverbClient()
     
@@ -197,7 +197,7 @@ async def test_incoming_message_parsing():
 async def test_fastapi_websocket_endpoint():
     """測試 FastAPI WebSocket 端點 - 驗證前端可以成功建立連線並註冊到 ReverbClient"""
     # 建立一個新的 ReverbClient 實例來避免影響全域狀態
-    from app.websocket.reverb_client import ReverbClient
+    from src.infrastructure.websocket.reverb_client import ReverbClient
     test_client = ReverbClient()
     
     # 手動設定必要的驗證參數
@@ -212,8 +212,8 @@ async def test_fastapi_websocket_endpoint():
     mock_ws = AsyncMock()
     
     # 模擬 subscribe_to_channel 來避免實際發送訊息
-    with patch('app.routers.websockets.reverb_client', test_client):
-        with patch('app.routers.websockets.laravel_client.me', new_callable=AsyncMock) as mock_me:
+    with patch('src.interfaces.fastapi.routers.websockets.reverb_client', test_client):
+        with patch('src.interfaces.fastapi.routers.websockets.laravel_client.me', new_callable=AsyncMock) as mock_me:
             mock_me.return_value = {"id": 123, "name": "Test User"}
             
             # 先測試 add_frontend_connection 是否正常運作

@@ -1,8 +1,8 @@
 import pytest
-from app.client.base import LaravelClient
-from app.client.customer import CustomerClient
-from app.client.reward import RewardClient
-from app.config import settings
+from src.infrastructure.clients.base import LaravelClient
+from src.infrastructure.clients.customer import CustomerClient
+from src.infrastructure.clients.reward import RewardClient
+from src.config.settings import settings
 
 
 @pytest.fixture
@@ -35,7 +35,7 @@ async def customer_id(authenticated_client):
     """取得一個可用的 customer_id 供測試使用，確保該客戶有點數帳戶。"""
     client = authenticated_client
     customer_client = CustomerClient(client)
-    from app.client.point import PointClient
+    from src.infrastructure.clients.point import PointClient
     point_client = PointClient(client)
     
     # 先取得較多客戶來尋找有點數帳戶的客戶

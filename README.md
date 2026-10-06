@@ -1,202 +1,104 @@
-# Loyalty Integration 整合專案｜繁體中文技術文件
+# Loyalty Integration
 
-一個以 **FastAPI** 建構的 Loyalty / Point API 整合專案，用來示範外部系統如何透過統一的 Python Client 整合 Laravel Loyalty API。
-
-本專案本身**不是 Loyalty 後端**，而是位於外部系統與 Laravel Loyalty API 之間的**整合層（Integration Layer）**，負責 API 整合、認證、工作流程（Workflow）編排、錯誤處理、`Idempotency-Key` 傳遞與 API 契約（API Contract）驗證。
-
-> **核心責任邊界：FastAPI 負責整合（Integration）；Laravel 負責 Loyalty 領域（Loyalty Domain）。**
+FastAPI 整合層，統一處理外部系統與 Laravel 多租戶會員積分平台的 API 通訊、認證、工作流程編排與即時事件轉發，消除重複整合邏輯。
 
 ---
 
-# 專案重點
+## 為什麼做這個專案
 
-* 單一真相來源（Single Source of Truth）：Laravel 擁有 Loyalty 狀態與業務邏輯
-* 明確責任邊界：FastAPI 為整合層、Laravel 為 Loyalty 領域
-* 領域 Client 模式（Domain Client Pattern）：Customer、Point、Coupon、Reward
-* 工作流程編排：POS Checkout、Mixed Payment
-* 路由契約驗證：`verify_routes.py`
-* Idempotency-Key 傳遞：由 FastAPI 傳遞，冪等性狀態由 Laravel 管理
-* 失敗邊界設計：不實作虛假的 Rollback
-* 刻意的架構取捨：不使用 Repository、不提前導入 Saga、不重複實作領域邏輯
+企業內部若有多個系統（POS、電商、CRM）需要接入同一個 Loyalty 平台，每個系統重複實作 JWT 認證、Token 刷新、錯誤重試、冪等性處理會導致程式碼腐化與維護成本上升。本專案做為**單一整合邊界**，將所有跨系統通用的整合邏輯抽離，外部系統只需呼叫本層的簡化 API，無需關心底層 Laravel API 的複雜性。
 
----
-
-# 1. 專案概述
-
-本專案模擬企業外部系統整合 Loyalty 平台的情境，可能的外部系統包括：
-
-* POS 系統
-* 網站
-* 手機應用程式
-* 電商平台
-* CRM 系統
-* 第三方會員系統
-
-## 整體架構圖
-
-```text
-Vue Frontend / External System
-
-      │
-      ▼
-┌────────────────────────────┐
-│ FastAPI Integration Layer  │
-│                            │
-│  REST Integration          │
-│   ├─ CustomerClient        │
-│   ├─ PointClient           │
-│   ├─ CouponClient          │
-│   ├─ RewardClient          │
-│   └─ Workflow              │
-│                            │
-│  Realtime Integration      │
-│   └─ WebSocket Gateway     │
-│       ├─ Reverb Client     │
-│       └─ Frontend Endpoint │
-└─────────────┬──────────────┘
-      │
-      ▼
-┌────────────────────────────┐
-│ Laravel Loyalty API        │
-│                            │
-│  Loyalty Domain Logic      │
-│  Laravel Reverb WebSocket  │
-└────────────────────────────┘
-```
-
-## 即時事件流程（Realtime Event Flow）
-
-```text
-Laravel Loyalty
-      │
-      │ Broadcast PointsUpdated
-      ▼
-Laravel Reverb
-      │
-      │ WebSocket Pusher Protocol
-      ▼
-FastAPI Reverb Client
-      │
-      │ Internal Forwarding
-      ▼
-FastAPI WebSocket Endpoint (/ws/points/{tenant_id}/{member_id})
-      │
-      ▼
-Vue Frontend
-```
-
-### 元件職責說明：
-- **Laravel Loyalty**: 負責產生 Loyalty 領域事件 (`PointsUpdated`)
-- **Laravel Reverb**: 負責 WebSocket 廣播，實作 Pusher 協定
-- **FastAPI Reverb Client**: 作為 WebSocket 用戶端連接 Reverb，接收即時事件
-- **FastAPI WebSocket Endpoint**: 提供前端連線，轉發事件給對應的使用者
-- **Vue Frontend**: 接收即時更新，更新 UI 顯示最新積分狀態
-              │
-              │ REST API
-              │ JWT
-              │ Idempotency-Key
-              ▼
-┌────────────────────────────┐
-│ Laravel Loyalty API        │
-│                            │
-│  Customer                  │
-│  Points                    │
-│  Coupons                   │
-│  Rewards                   │
-│  Business Rules            │
-│  Idempotency               │
-│  Persistence               │
-└────────────────────────────┘
-```
-
-## 層級責任說明
-
-| 層級 | 責任說明 |
-| --------------- | ----------------------------------- |
-| External System | 外部業務情境與使用者流程 |
-| FastAPI Router | HTTP API 契約 |
-| Domain Client | Laravel API 通訊 |
-| Workflow | 跨領域流程編排（Cross-domain Orchestration） |
-| Laravel API | Loyalty 領域業務邏輯 |
-| Tests | 回歸測試保護 / 契約驗證 |
+核心痛點解決：
+- 消除多系統重複的 API 整合程式碼
+- 統一錯誤處理、逾時、重試策略
+- 集中管理跨領域工作流程（如 POS 結帳時的積分抵扣+獎勵發放）
+- 提供統一的 WebSocket 閘道，將 Laravel Reverb 的即時事件轉發給前端
 
 ---
 
-# 2. 為什麼需要整合層？
+## 快速開始
 
-外部系統理論上可以直接呼叫 Laravel Loyalty API，但如果每個外部系統都自行整合，會逐漸產生重複的整合關注點（Integration Concerns）：
+### 環境需求
+- Python 3.11+
+- 執行中的 Laravel Loyalty API（localhost:8088）
+- Laravel Reverb WebSocket 服務（可選）
 
-* JWT 認證
-* Token 自動刷新
-* HTTP 錯誤處理
-* 逾時處理
-* API 契約映射
-* `Idempotency-Key` 傳遞
-* 跨領域工作流程
-* 整合測試
+### 安裝與啟動
+```bash
+# 複製環境變數範本
+cp .env.example .env
+# 編輯 .env 填入 Laravel API 憑證與 Reverb 設定
 
-如果每個外部系統都重複實作這些邏輯，會形成：
+# 建立虛擬環境並安裝依賴
+python -m venv .venv
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
+pip install -e ".[dev]"
 
-```text
-POS
- ├── JWT Login
- ├── Customer API
- ├── Point API
- ├── Coupon API
- └── Error Handling
-
-Website
- ├── JWT Login
- ├── Customer API
- ├── Point API
- ├── Coupon API
- └── Error Handling
-
-CRM
- ├── JWT Login
- ├── Customer API
- ├── Point API
- ├── Coupon API
- └── Error Handling
+# 啟動 FastAPI 服務
+uvicorn src.main:create_app --factory --reload --host 0.0.0.0 --port 8000
 ```
 
-這些重複的整合邏輯可以集中到單一整合層，讓所有外部系統共享：
-
-```text
-External Systems
-
-       │
-       ▼
-
-Integration Layer
-
-       │
-       ▼
-
-Laravel Loyalty API
-```
-
-整合層的目的不是重新實作 Loyalty 領域邏輯，而是提供一個穩定一致的整合邊界，讓外部系統不需要直接依賴 Laravel API 的整合細節。
+服務啟動後可訪問：
+- API 文件：http://localhost:8000/docs
+- ReDoc：http://localhost:8000/redoc
 
 ---
 
-# 3. 核心架構原則
+## 架構重點
 
-## 3.1 單一真相來源
+### 責任邊界清晰
+- **Laravel Loyalty API**：唯一擁有會員積分領域邏輯與狀態，負責所有業務規則驗證、資料持久化
+- **本整合層**：只做通訊、流程編排與協定轉換，**絕不複製任何領域邏輯**
 
-Laravel 是 Loyalty 領域唯一的業務邏輯擁有者，以下規則完全由 Laravel 負責：
+### 核心架構模式
+- **領域客戶端模式**：針對 Laravel 的 Customer/Point/Coupon/Reward 資源封裝專屬 Client，統一處理認證與錯誤
+- **工作流程編排**：跨資源的複雜操作（如 POS 結帳）抽出為獨立 Workflow，避免業務程式碼散落在 Router 中
+- **即時事件轉發**：透過 Reverb Client 訂閱 Laravel 廣播的事件，透過 FastAPI WebSocket 端點轉發給對應使用者
+- **冪等性透傳**：將外部請求的冪等鍵直接傳遞給 Laravel，由領域服務負責狀態管理，整合層不重複實作
 
-* 點數餘額計算
-* 點數交易管理
-* 點數到期處理
-* 優惠券資格判斷
-* 優惠券兌換邏輯
-* 獎勵資格判斷
-* 獎勵發放邏輯
-* 冪等性狀態管理
-* 所有 Loyalty 狀態儲存
+---
 
-FastAPI 不會複製這些領域規則。
+## 開發指令
+
+```bash
+# 程式碼檢查與格式化
+ruff check src/ tests/
+ruff format src/ tests/
+
+# 型別檢查
+mypy .
+
+# 執行測試
+pytest tests/unit/ -v                    # 單元測試（不需依賴 Laravel）
+pytest tests/integration/ -v -m integration  # 整合測試（需啟動 Laravel API）
+pytest --cov=src --cov-report=html      # 產生覆蓋率報告
+
+# pre-commit（提交前自動檢查）
+pre-commit run --all-files
+```
+
+---
+
+## 專案結構
+
+```text
+src/
+├── main.py                 # FastAPI 應用程式進入點、生命週期管理
+├── config/                 # 環境變數與設定
+├── core/                   # 核心基礎設施：日誌、依賴注入
+├── domain/                 # 領域模型：實體、值物件、例外
+├── application/
+│   └── use_cases/          # 應用層用例，含 workflow 編排
+├── infrastructure/
+│   ├── clients/            # Laravel API 客戶端實作
+│   └── websocket/          # Reverb WebSocket 客戶端
+└── interfaces/
+    └── fastapi/            # HTTP 介面：路由器、Pydantic  schemas
+
+tests/
+├── unit/                   # 單元測試（Mock Laravel Client）
+└── integration/            # 整合測試（連接真實 Laravel API）
+```
 
 ## 3.2 整合層不成為第二個領域
 

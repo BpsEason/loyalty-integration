@@ -1,0 +1,1 @@
+"""Interface layer - external APIs and entry points"""

@@ -5,8 +5,17 @@
 import logging
 import sys
 from pythonjsonlogger import json
-from datetime import datetime
 from typing import Any, Mapping
+
+
+# Python logging.LogRecord 標準保留欄位，避免上下文覆寫內建欄位
+LOGGING_RESERVED_FIELDS = {
+    'asctime', 'levelname', 'levelno', 'name', 'message',
+    'module', 'funcName', 'lineno', 'pathname', 'filename',
+    'created', 'msecs', 'relativeCreated', 'thread', 'threadName',
+    'process', 'processName', 'exc_info', 'exc_text', 'stack_info',
+    'args', 'msg'
+}
 
 
 def setup_logging() -> None:
@@ -27,16 +36,6 @@ def setup_logging() -> None:
     )
     json_handler.setFormatter(formatter)
     logger.addHandler(json_handler)
-
-    # 也保留一個給開發者友好的控制台輸出（可選）
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_formatter = logging.Formatter(
-        '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    )
-    console_handler.setFormatter(console_formatter)
-    # 只添加一次，避免重複輸出
-    # logger.addHandler(console_handler)
 
 
 def get_logger(name: str) -> logging.Logger:
@@ -68,7 +67,15 @@ def log_with_context(
         context: 要附加的上下文資訊字典
         exc_info: 是否記錄例外資訊
     """
-    extra = context.copy() if context else {}
-    extra['timestamp'] = datetime.utcnow().isoformat()
+    extra = {}
+    if context:
+        # 過濾保留欄位，將衝突的上下文欄位放入context命名空間中
+        for key, value in context.items():
+            if key in LOGGING_RESERVED_FIELDS:
+                if 'context' not in extra:
+                    extra['context'] = {}
+                extra['context'][key] = value
+            else:
+                extra[key] = value
     
     logger.log(level, message, extra=extra, exc_info=exc_info)

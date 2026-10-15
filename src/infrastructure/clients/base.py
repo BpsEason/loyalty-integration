@@ -52,7 +52,7 @@ class LaravelClient:
         httpx.WriteTimeout,
     )
 
-    def __init__(self, limits: httpx.Limits | None = None, token_state: TokenState | None = None):
+    def __init__(self, limits: httpx.Limits | None = None, token_state: TokenState | None = None, refresh_lock: asyncio.Lock | None = None, client: httpx.AsyncClient | None = None):
         self.base_url = settings.laravel_api_base_url.rstrip("/")
         self.timeout = settings.default_timeout
         # Token狀態：如果是原始實例則創建新的TokenState，如果是clone則共享傳入的TokenState
@@ -65,11 +65,15 @@ class LaravelClient:
             self._token_state = token_state
             self._is_original_instance = False
         self._refresh_buffer: int = 30  # 過期前30秒自動刷新
-        self._refresh_lock: asyncio.Lock = asyncio.Lock()  # 防止並發刷新
+        # 如果是clone，共享原始實例的刷新鎖，否則創建新的
+        self._refresh_lock = refresh_lock if refresh_lock is not None else asyncio.Lock()
         self._tenant_id: str | None = None  # 每個實例獨立的租戶ID
-        # 建立共享的 AsyncClient 與連接池
-        self._client: httpx.AsyncClient | None = None
+        # 如果是clone，共享原始實例的HTTP client，否則初始化為None
+        self._client = client
         self._limits = limits
+        # 只有原始實例需要維護clone列表
+        if self._is_original_instance:
+            self._clones = []
         
     @property
     def _token(self) -> str | None:
@@ -102,15 +106,21 @@ class LaravelClient:
             timeout=self.timeout,
             limits=self._limits or httpx.Limits()
         )
+        # 原始實例初始化client後，同步所有已存在的clone的_client引用
+        if self._is_original_instance:
+            # 這裡需要維護一個clone列表來跟蹤所有子實例，先修改__init__添加_clones屬性
+            if not hasattr(self, '_clones'):
+                self._clones = []
+            for clone in self._clones:
+                clone._client = self._client
         return self
 
     async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object | None) -> None:
         """結束時正確關閉 HTTP client - 只有原始實例（根實例）才能關閉底層的HTTPX client
         這防止clone在使用完畢後意外關閉所有clone共享的連線池
         """
-        # 只有當前實例是token_state的擁有者（即創建token_state的原始實例）才能關閉client
-        # 通過檢查是否存在_token_state_owner標識來判斷是否是原始實例
-        if hasattr(self, '_is_original_instance') and self._client:
+        # 只有原始實例才能關閉client，避免clone關閉共享資源
+        if self._is_original_instance and self._client:
             await self._client.aclose()
             self._client = None
 
@@ -150,12 +160,16 @@ class LaravelClient:
         建立當前客戶端的副本，共享底層的HTTPX連線池、token狀態和刷新鎖
         副本具有獨立的tenant_id，確保多租戶隔離的同時复用連線資源
         """
-        # 創建新的clone，傳入共享的token_state以確保所有clone共享同一份Token狀態
-        clone = LaravelClient(limits=self._limits, token_state=self._token_state)
-        # 共享底層的HTTPX client - 確保連線池復用
-        clone._client = self._client
-        # 共享刷新鎖，防止並發刷新的問題
-        clone._refresh_lock = self._refresh_lock
+        # 創建新的clone，傳入所有需要共享的資源
+        clone = LaravelClient(
+            limits=self._limits,
+            token_state=self._token_state,
+            refresh_lock=self._refresh_lock,
+            client=self._client
+        )
+        # 如果是從原始實例clone的，將新clone添加到原始實例的_clones列表中
+        if self._is_original_instance and hasattr(self, '_clones'):
+            self._clones.append(clone)
         # 每個clone的tenant_id都是獨立的，實現租戶隔離
         clone._tenant_id = None  # 每個clone必須獨立設定自己的tenant_id
         return clone
@@ -289,6 +303,64 @@ class LaravelClient:
                 )
             return data
 
+    async def _force_refresh(self) -> dict[str, Any]:
+        """強制刷新JWT Token，忽略本地exp檢查，專門用於401場景
+        這個方法會跳過預先的exp檢查，直接嘗試刷新token，確保即使本地認為token還有效，
+        但服務器認為已失效時，仍能獲取新的token
+        """
+        async with self._refresh_lock:
+            logger.info("Starting forced token refresh due to 401")
+            
+            # 直接使用底層httpx client呼叫，不經過request()，避免無限遞迴
+            client = self._ensure_client()
+            try:
+                headers = self.headers.copy()
+                resp = await client.post(
+                    "/auth/refresh",
+                    headers=headers,
+                )
+            except httpx.TimeoutException as exc:
+                raise LaravelAPIError(
+                    message=f"Laravel API timeout during forced refresh: {exc}",
+                    status_code=504,
+                    endpoint="/auth/refresh",
+                ) from exc
+            except httpx.RequestError as exc:
+                raise LaravelAPIError(
+                    message=f"Laravel API connection failed during forced refresh: {exc}",
+                    status_code=502,
+                    endpoint="/auth/refresh",
+                ) from exc
+
+            try:
+                data = resp.json()
+            except ValueError:
+                data = {"raw": resp.text}
+
+            if resp.status_code != 200 or not isinstance(data, dict):
+                raise LaravelAPIError(
+                    message=data.get("message", "Forced refresh failed") if isinstance(data, dict) else "Forced refresh failed",
+                    status_code=resp.status_code,
+                    payload=data,
+                    endpoint="/auth/refresh",
+                )
+
+            # 更新本機儲存的 token - 遵循 Laravel 標準 API 回傳格式
+            if "data" in data and "access_token" in data["data"]:
+                self.set_token(data["data"]["access_token"], data["data"].get("token_type", "Bearer"))
+                logger.info("Forced token refresh successful")
+            elif "access_token" in data:
+                self.set_token(data["access_token"], data.get("token_type", "Bearer"))
+                logger.info("Forced token refresh successful")
+            else:
+                raise LaravelAPIError(
+                    message="Invalid forced refresh response: missing access_token",
+                    status_code=resp.status_code,
+                    payload=data,
+                    endpoint="/auth/refresh",
+                )
+            return data
+
     async def logout(self) -> dict[str, Any]:
         """登出並清除本機 token"""
         try:
@@ -397,9 +469,10 @@ class LaravelClient:
                         logger.error("Cannot retry 401 for mutation request without idempotency key", extra={"endpoint": path})
                         break
                         
-                    logger.warning("Received 401, attempting to refresh token and retry once", extra={"endpoint": path})
+                    logger.warning("Received 401, attempting to force refresh token and retry once", extra={"endpoint": path})
                     has_retried_401 = True
-                    await self.refresh()
+                    # 強制刷新token，忽略本地exp檢查，確保獲取新token
+                    await self._force_refresh()
                     # 刷新後更新headers，然後繼續重試一次
                     headers = self.headers.copy()
                     if idempotency_key:

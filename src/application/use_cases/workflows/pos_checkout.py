@@ -40,6 +40,9 @@ class POSCheckoutWorkflow:
         redeem_amount: int = 30,
         order_reference: str | None = None,
         workflow_idempotency_prefix: str | None = None,
+        request_id: str | None = None,
+        workflow_id: str | None = None,
+        tenant_id: str | None = None,
     ) -> dict:
         order_reference = order_reference or self.client.generate_idempotency_key(prefix="pos-order")
         
@@ -47,12 +50,19 @@ class POSCheckoutWorkflow:
         # 這樣即使工作流程重試，相同的步驟仍會使用相同的Idempotency-Key
         base_prefix = workflow_idempotency_prefix or order_reference
         
+        # 生成workflow_id如果未提供
+        workflow_id = workflow_id or self.client.generate_idempotency_key(prefix="workflow")
+        
         workflow_context = {
+            "request_id": request_id,
+            "workflow_id": workflow_id,
+            "tenant_id": tenant_id,
             "customer_id": customer_id,
             "order_reference": order_reference,
             "workflow_idempotency_prefix": base_prefix,
             "earn_amount": earn_amount,
-            "redeem_amount": redeem_amount
+            "redeem_amount": redeem_amount,
+            "step": "init"
         }
         
         # 保留開發者友好的控制台輸出，但同時記錄結構化日誌
@@ -65,32 +75,44 @@ class POSCheckoutWorkflow:
         
         # 記錄工作流程開始
         logger.info("POS結帳流程開始", extra=workflow_context)
+        
+        # 追蹤已完成的步驟，用於錯誤發生時識別部分成功狀態
+        completed_steps = []
+        earn_completed = False
+        earn_transaction_id = None
 
         try:
             # 1. 查詢會員
+            workflow_context["step"] = "get_customer"
             console.print("\n[bold]1. 查詢會員資訊[/bold]")
             customer = await self.customer_client.get(customer_id)
             customer_data = customer["data"]
             console.print(f"   姓名: {customer_data.get('name')}")
             console.print(f"   Email: {customer_data.get('email')}")
+            completed_steps.append("get_customer")
             logger.info("會員資訊查詢成功", extra={
                 **workflow_context,
+                "completed_steps": completed_steps,
                 "customer_name": customer_data.get('name'),
                 "customer_email": customer_data.get('email')
             })
 
             # 2. 查詢目前餘額
+            workflow_context["step"] = "get_balance_before"
             console.print("\n[bold]2. 查詢目前點數餘額[/bold]")
             balance_before = await self.point_client.get_balance(customer_id)
             before = balance_before["data"]["balance"]
             current_balance = PointBalance(before)
             console.print(f"   目前餘額: [cyan]{current_balance.balance}[/cyan]")
+            completed_steps.append("get_balance_before")
             logger.info("點數餘額查詢成功", extra={
                 **workflow_context,
+                "completed_steps": completed_steps,
                 "balance_before": before
             })
 
             # 3. 消費發點（earn）
+            workflow_context["step"] = "create_earn_transaction"
             console.print("\n[bold]3. 消費發點 (earn)[/bold]")
             # 使用穩定的基於工作流程前綴的冪等鍵，確保重試時使用相同的key
             earn_key = f"{base_prefix}-earn"
@@ -104,13 +126,18 @@ class POSCheckoutWorkflow:
             )
             console.print(f"   [green]發點成功[/green] +{earn_amount}")
             console.print(f"   交易 ID: {earn_result['data']['id']}")
+            completed_steps.append("create_earn_transaction")
+            earn_completed = True
+            earn_transaction_id = earn_result['data']['id']
             logger.info("消費發點成功", extra={
                 **workflow_context,
-                "earn_transaction_id": earn_result['data']['id'],
+                "completed_steps": completed_steps,
+                "earn_transaction_id": earn_transaction_id,
                 "idempotency_key": earn_key
             })
 
             # 4. 兌換點數（redeem）
+            workflow_context["step"] = "create_redeem_transaction"
             console.print("\n[bold]4. 兌換點數 (redeem)[/bold]")
             # 使用穩定的基於工作流程前綴的冪等鍵，確保重試時使用相同的key
             redeem_key = f"{base_prefix}-redeem"
@@ -123,8 +150,10 @@ class POSCheckoutWorkflow:
             )
             console.print(f"   [green]兌換成功[/green] -{redeem_amount}")
             console.print(f"   交易 ID: {redeem_result['data']['id']}")
+            completed_steps.append("create_redeem_transaction")
             logger.info("點數兌換成功", extra={
                 **workflow_context,
+                "completed_steps": completed_steps,
                 "redeem_transaction_id": redeem_result['data']['id'],
                 "idempotency_key": redeem_key
             })
@@ -133,12 +162,15 @@ class POSCheckoutWorkflow:
             expected_balance = current_balance.calculate_after_transaction(earn_amount, redeem_amount)
             
             # 5. 再次查詢餘額
+            workflow_context["step"] = "get_balance_after"
             console.print("\n[bold]5. 查詢最終餘額[/bold]")
             balance_after = await self.point_client.get_balance(customer_id)
             after = balance_after["data"]["balance"]
             console.print(f"   最終餘額: [cyan]{after}[/cyan]")
+            completed_steps.append("get_balance_after")
             logger.info("最終餘額查詢完成", extra={
                 **workflow_context,
+                "completed_steps": completed_steps,
                 "balance_after": after,
                 "expected_balance": expected_balance.balance
             })
@@ -167,7 +199,8 @@ class POSCheckoutWorkflow:
                     "balance_mismatch": True
                 })
 
-            return {
+            workflow_context["step"] = "completed"
+            final_result = {
                 "customer_id": customer_id,
                 "order_reference": order_reference,
                 "balance_before": before,
@@ -178,8 +211,31 @@ class POSCheckoutWorkflow:
                 "success": after == expected_balance.balance,
             }
             
+            return final_result
+            
         except Exception as e:
-            logger.error("POS結帳流程執行失敗", exc_info=True, extra=workflow_context)
+            # 檢查是否發生了部分成功的狀態：Earn已完成但後續步驟失敗
+            # 這是一個需要特別關注的不確定狀態，需要在日誌中明確標記
+            workflow_context["step"] = "failed"
+            workflow_context["completed_steps"] = completed_steps
+            workflow_context["earn_completed"] = earn_completed
+            workflow_context["earn_transaction_id"] = earn_transaction_id
+            
+            if earn_completed:
+                # 如果發點已經成功但兌換失敗，這是一個部分成功的狀態，需要升級日誌級別並明確標記
+                logger.critical(
+                    "POS結帳流程發生關鍵部分成功狀態：Earn已成功但後續步驟失敗，存在資料不一致風險",
+                    exc_info=True,
+                    extra={
+                        **workflow_context,
+                        "indeterminate_state": True,
+                        "error": str(e)
+                    }
+                )
+            else:
+                # 普通失敗，所有步驟都未完成或在earn之前失敗
+                logger.error("POS結帳流程執行失敗", exc_info=True, extra=workflow_context)
+            
             raise WorkflowExecutionError(
                 f"POS結帳流程失敗: {str(e)}",
                 workflow_name="pos_checkout",

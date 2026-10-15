@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, Header, Depends
+import uuid
+from fastapi import APIRouter, HTTPException, Header, Depends, Request
 from src.core.dependencies import laravel_client
 from src.infrastructure.clients.base import LaravelAPIError
 from src.application.use_cases.workflows.pos_checkout import POSCheckoutWorkflow
@@ -17,6 +18,7 @@ def get_tenant_id(x_tenant_id: Optional[str] = Header(None)) -> str:
 
 @router.post("/pos-checkout")
 async def pos_checkout(
+    request: Request,
     body: POSCheckoutRequest,
     tenant_id: str = Depends(get_tenant_id),
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
@@ -24,6 +26,11 @@ async def pos_checkout(
     # 克隆全局客戶端以隔離租戶上下文，共享底層HTTPX連線池
     request_client = laravel_client.clone()
     request_client.set_tenant_id(tenant_id)
+    
+    # 生成唯一的workflow_id來追蹤整個工作流程
+    workflow_id = str(uuid.uuid4())
+    # 從request狀態中獲取request_id
+    request_id = getattr(request.state, 'request_id', None)
     
     workflow = POSCheckoutWorkflow(request_client)
     # 如果呼叫端提供了全域的Idempotency-Key，將其作為工作流程的冪等前綴
@@ -34,5 +41,12 @@ async def pos_checkout(
         redeem_amount=body.redeem_amount,
         order_reference=body.order_reference,
         workflow_idempotency_prefix=idempotency_key,
+        request_id=request_id,
+        workflow_id=workflow_id,
+        tenant_id=tenant_id,
     )
+    
+    # 在回應中加入追蹤ID
+    result['request_id'] = request_id
+    result['workflow_id'] = workflow_id
     return result

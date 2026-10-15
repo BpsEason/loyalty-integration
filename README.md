@@ -128,13 +128,12 @@ External Systems
 - **Explicit domain ownership**：嚴格劃分狀態所有權，Laravel 是 Loyalty 狀態的唯一權威來源
 - **Clear integration boundary**：FastAPI 從不複製或持久化任何 Loyalty 領域狀態，所有查詢即時請求 Laravel
 - **Tenant context propagation**：X-Tenant-ID 貫穿所有 HTTP API 請求鏈，WebSocket 訂閱支援選用性的租戶參數
-- **Idempotency-aware retry**：修改操作的重試必須滿足冪等性條件，從根源避免重複交易
+- **Idempotency-aware retry**：提供具冪等性條件的重試策略，降低重複交易風險
 - **Explicit timeout semantics**：區分不同類型的超時錯誤，讀取超時與伺服器失敗有完全不同的處理邏輯
 - **Partial failure logging**：工作流程中途失敗時，記錄已完成步驟的完整上下文，方便後續除錯與狀態恢復
-- **JWT lifecycle management**：Single Flight Pattern 解決並發刷新的競爭條件，預先刷新避免中斷請求
+- **JWT lifecycle management**：程式碼實作 Single Flight Pattern 應對 token 刷新的並發競爭，預先刷新避免中斷請求
 - **Realtime event forwarding**：統一的 WebSocket 閘道，抽象 Laravel Reverb 的連線複雜性
 - **Contract-oriented testing**：從單元測試到整合測試，持續驗證 API 契約的一致性
-- **Concurrency safety validation**：專門的並發測試驗證 token 刷新、多租戶隔離的協程安全性，避免競爭條件
 
 ---
 
@@ -274,6 +273,83 @@ python -m pytest -q -m "not integration"
 # 路由契約驗證通過
 python verify_routes.py
 ```
+
+---
+
+## 設計模式與關鍵工程設計
+
+### 1. 設計模式與工程原則總表
+
+| 名稱與分類 | 實作狀態 | 實際用途 | 對應程式碼位置 |
+|-----------|---------|---------|--------------|
+| **Dependency Injection**（依賴注入） | ✅ 已實作 | 使用 FastAPI `Depends` 實現依賴注入，管理 Client 實例的生命週期 | `src/core/dependencies.py` |
+| **Adapter**（配接器模式） | ⚠️ 部分符合 | Laravel API Client 封裝底層 HTTP 呼叫，對外提供統一接口。非完整 GoF Adapter，僅做為通訊層封裝 | `src/infrastructure/clients/base.py` |
+| **Workflow Orchestrator**（流程編排器） | ✅ 已實作 | POSCheckoutWorkflow 做為單一入口協調多步驟結帳流程，本質是流程編排入口而非標準 GoF Facade | `src/application/use_cases/workflows/pos_checkout.py` |
+| **Application Factory**（應用程式工廠） | ✅ 已實作 | `create_app()` 是標準的 FastAPI 應用程式工廠函數，用於建立並配置 FastAPI 實例 | `src/main.py` |
+| **自訂 Clone 策略** | ✅ 已實作 | `LaravelClient.clone()` 實現資源共享與租戶隔離，不列為標準 Prototype Pattern | `src/infrastructure/clients/base.py` |
+| **模組級共享實例** | ✅ 已實作 | `laravel_client` 與 `reverb_client` 在模組層級初始化，整個應用程式共享同一實例。僅是程序內單例，不支援跨程序共享 | `src/core/dependencies.py`, `src/infrastructure/websocket/reverb_client.py` |
+| **Single Flight**（並發控制） | ✅ 程式碼已實作 / ⏳ 驗證中 | 使用 `asyncio.Lock` 實現 token 並發刷新機制。目前無測試驗證極端並發場景下的實際 HTTP 呼叫次數 | `src/infrastructure/clients/base.py` |
+| **Anti-Corruption Layer**（防腐層） | ⚠️ 僅基礎實作 | 僅有簡單的錯誤轉換（LaravelAPIError），不足以認定為完整的 ACL 實現 | `src/infrastructure/clients/base.py` |
+| **Strategy / Repository / Decorator / Template Method** | ❌ 未採用 | 目前專案中未發現這些模式的明確實作 | - |
+
+### 2. 核心工程設計
+
+#### 多租戶下的資源共享與上下文隔離
+
+`LaravelClient.clone()` 的設計目的是在多租戶場景下，既實現底層資源的高效复用，又保證各租戶在 Client 層級的上下文隔離。
+
+- **共享資源**：所有 clone 實例共享原始實例的 Token 狀態、刷新鎖和 HTTP Client 連接池
+- **獨立狀態**：每個 clone 擁有獨立的 `_tenant_id`，自動附加到所有請求的 X-Tenant-ID header 中，實現 Client 層級的 tenant context 隔離（經程式碼核實）。此設計僅確保請求層級的上下文正確性，不保證整體 API 或 WebSocket 的授權安全已獲得完整保證
+- **生命週期差異**：只有原始實例可以關閉底層的 HTTP client，避免 clone 意外中斷所有共享連接
+- **適用範圍限制**：此設計僅適用於單程序部署。在多程序或分散式部署場景下，無法實現跨程序的資源共享與狀態同步
+
+程式碼位置：`src/infrastructure/clients/base.py`
+
+#### Token 刷新與並發控制
+
+實現了兩層刷新機制：
+- **預先刷新**：在 token 過期前 30 秒自動刷新，避免中斷使用者請求
+- **401 強制刷新**：當收到伺服器返回的 401 未授權錯誤時，強制刷新 token 後重試一次
+
+並發控制方面，使用 `asyncio.Lock` 確保同一時間只有一個協程執行刷新操作。但此鎖僅能控制**同一程序內**的協程競爭，無法解決跨程序或多實例部署下的並發刷新問題。
+
+**重要限制**：目前程式碼中已實作同步機制，但現有測試套件中並無大規模並發場景的驗證，無法保證所有極端情況下都只會發送一次刷新請求。
+
+程式碼位置：`src/infrastructure/clients/base.py`
+
+#### POS Checkout 流程編排與冪等性
+
+POSCheckoutWorkflow 按照固定順序協調以下步驟：
+1. 會員資訊查詢
+2. 結帳前點數餘額查詢
+3. 消費發點（earn transaction）
+4. 點數兌換（redeem transaction）
+5. 結帳後最終餘額查詢
+
+關於冪等性：
+- FastAPI 負責為每個修改操作（發點、兌換）生成並傳遞獨立的 Idempotency-Key，實際冪等性取決於 Laravel 端的實作
+- 工作流程本身不提供端到端的冪等性保證。如果提供了 `workflow_idempotency_prefix`，程式碼會基於此前綴與步驟序號生成穩定的步驟級鍵，確保重試時步驟使用相同的冪等鍵，但這不代表流程能保證端到端的原子性
+- **部分成功風險**：如果發點成功但兌換失敗，現有流程**目前不提供**任何自動回滾、補償或狀態協調機制，必須依賴外部系統或人工介入處理不一致狀態
+- 本流程不具備 Saga 補償機制或分散式交易保證
+
+程式碼位置：`src/application/use_cases/workflows/pos_checkout.py`
+
+#### WebSocket 租戶授權機制
+
+Reverb WebSocket 客戶端的租戶參數僅為選用設計：
+- `tenant_id` 在 `get_broadcasting_auth` 和 `subscribe_to_channel` 中均為可選參數（`int | None`）
+- 僅在提供 tenant_id 時才會附加 X-Tenant-ID header 進行授權
+- 不做為強制的租戶隔離機制，僅做為進階使用場景的選用功能
+
+程式碼位置：`src/infrastructure/websocket/reverb_client.py`
+
+### 3. 架構取捨與限制
+
+- **職責分工**：Laravel 負責核心業務規則與點數資料一致性；FastAPI 負責整合與流程協調。此分工嚴格遵循「Laravel owns Loyalty state」的核心原則
+- **共用 HTTP Client 的效益與風險**：共享連接池降低了 TLS 握手開銷，但所有租戶共用同一組連線，生命週期管理複雜，必須由原始實例統一維護
+- **asyncio.Lock 的局限性**：僅能控制同一程序內的協程競爭，多實例部署場景下仍可能發生並發刷新
+- **POS 多步驟流程的部分成功風險**：流程中間失敗時，已執行的步驟不會自動回滾，需要依賴 Laravel 的單步驟冪等性來保證重試安全
+- **測試證據強度差異**：Mock 單元測試僅能驗證邏輯正確性，真實整合場景下的行為仍需要完整的整合測試驗證
 
 ---
 

@@ -165,3 +165,122 @@ class TestPOSCheckoutWorkflowUnit:
         # 驗證自動生成了訂單參考號
         assert result["order_reference"] == "pos-order-123"
         mock_laravel_client.generate_idempotency_key.assert_any_call(prefix="pos-order")
+
+    @pytest.mark.asyncio
+    async def test_workflow_tracking_ids_propagation(self, workflow, mock_laravel_client, caplog):
+        """測試工作流程追蹤ID(request_id, workflow_id, tenant_id)能夠正確傳遞和記錄"""
+        import logging
+        caplog.set_level(logging.INFO)
+        
+        # 模擬基本成功流程
+        mock_laravel_client.customer_client.get = AsyncMock(return_value={
+            "data": {"name": "測試會員", "email": "test@example.com"}
+        })
+        mock_laravel_client.point_client.get_balance = AsyncMock(return_value={
+            "data": {"balance": 100}
+        })
+        mock_laravel_client.point_client.create_transaction = AsyncMock(return_value={
+            "data": {"id": "earn-transaction-001"}
+        })
+        mock_laravel_client.point_client.redeem = AsyncMock(return_value={
+            "data": {"id": "redeem-transaction-001"}
+        })
+        mock_laravel_client.generate_idempotency_key.side_effect = lambda prefix="": f"{prefix}-123"
+
+        # 提供追蹤ID
+        result = await workflow.run(
+            customer_id=123,
+            request_id="test-request-456",
+            workflow_id="test-workflow-789",
+            tenant_id="test-tenant-001"
+        )
+
+        # 驗證所有日誌都包含追蹤ID
+        assert any(
+            "POS結帳流程開始" in record.getMessage() and
+            record.__dict__.get("request_id") == "test-request-456" and
+            record.__dict__.get("workflow_id") == "test-workflow-789" and
+            record.__dict__.get("tenant_id") == "test-tenant-001"
+            for record in caplog.records
+        ), "日誌中未正確記錄追蹤ID資訊"
+
+    @pytest.mark.asyncio
+    async def test_partial_success_state_logging(self, workflow, mock_laravel_client, caplog):
+        """測試當Earn成功但Redeem失敗時，能夠正確識別並記錄部分成功狀態"""
+        import logging
+        caplog.set_level(logging.CRITICAL)
+        
+        # 模擬會員查詢成功
+        mock_laravel_client.customer_client.get = AsyncMock(return_value={
+            "data": {"name": "測試會員", "email": "test@example.com"}
+        })
+        # 模擬餘額查詢成功
+        mock_laravel_client.point_client.get_balance = AsyncMock(return_value={
+            "data": {"balance": 100}
+        })
+        # 模擬earn成功，但redeem失敗
+        mock_laravel_client.point_client.create_transaction = AsyncMock(return_value={
+            "data": {"id": "earn-transaction-001"}
+        })
+        mock_laravel_client.point_client.redeem = AsyncMock(side_effect=Exception("Redeem timeout"))
+
+        # 執行工作流程應該失敗
+        with pytest.raises(WorkflowExecutionError) as exc_info:
+            await workflow.run(
+                customer_id=123,
+                request_id="test-request-456",
+                workflow_id="test-workflow-789",
+                tenant_id="test-tenant-001"
+            )
+
+        # 驗證是否記錄了critical日誌來標記部分成功狀態
+        critical_logs = [
+            record for record in caplog.records
+            if record.levelno == logging.CRITICAL and
+            "POS結帳流程發生關鍵部分成功狀態" in record.getMessage() and
+            record.__dict__.get("indeterminate_state") is True and
+            record.__dict__.get("earn_completed") is True
+        ]
+        assert len(critical_logs) == 1, "當Earn成功但Redeem失敗時，未正確記錄critical等級的部分成功狀態日誌"
+
+    @pytest.mark.asyncio
+    async def test_redeem_timeout_categorized_as_indeterminate(self, workflow, mock_laravel_client, caplog):
+        """測試當Earn成功後Redeem發生timeout時，正確分類為不確定狀態"""
+        import logging
+        # 使用Exception模擬timeout狀況，不需要依賴httpx
+        caplog.set_level(logging.CRITICAL)
+        
+        # 模擬會員查詢成功
+        mock_laravel_client.customer_client.get = AsyncMock(return_value={
+            "data": {"name": "測試會員", "email": "test@example.com"}
+        })
+        # 模擬餘額查詢成功
+        mock_laravel_client.point_client.get_balance = AsyncMock(return_value={
+            "data": {"balance": 100}
+        })
+        # 模擬earn成功，但redeem發生ReadTimeout（屬於網路逾時，結果不確定）
+        mock_laravel_client.point_client.create_transaction = AsyncMock(return_value={
+            "data": {"id": "earn-transaction-001"}
+        })
+        mock_laravel_client.point_client.redeem = AsyncMock(side_effect=Exception("Redeem request timed out"))
+
+        # 執行工作流程應該失敗
+        with pytest.raises(WorkflowExecutionError) as exc_info:
+            await workflow.run(
+                customer_id=123,
+                request_id="test-request-456",
+                workflow_id="test-workflow-789",
+                tenant_id="test-tenant-001"
+            )
+
+        # 驗證是否正確標記為indeterminate_state
+        critical_logs = [
+            record for record in caplog.records
+            if record.levelno == logging.CRITICAL and
+            "POS結帳流程發生關鍵部分成功狀態" in record.getMessage() and
+            record.__dict__.get("indeterminate_state") is True and
+            record.__dict__.get("earn_completed") is True and
+            record.__dict__.get("request_id") == "test-request-456" and
+            record.__dict__.get("workflow_id") == "test-workflow-789"
+        ]
+        assert len(critical_logs) == 1, "當Earn成功但Redeem逾時時，未正確標記為不確定狀態"

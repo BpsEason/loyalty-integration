@@ -469,7 +469,13 @@ class LaravelClient:
                         logger.error("Cannot retry 401 for mutation request without idempotency key", extra={"endpoint": path})
                         break
                         
-                    logger.warning("Received 401, attempting to force refresh token and retry once", extra={"endpoint": path})
+                    logger.warning(
+                        "Received 401, attempting to force refresh token and retry once", 
+                        extra={
+                            "endpoint": path,
+                            "tenant_id": self._tenant_id
+                        }
+                    )
                     has_retried_401 = True
                     # 強制刷新token，忽略本地exp檢查，確保獲取新token
                     await self._force_refresh()
@@ -519,7 +525,14 @@ class LaravelClient:
             if attempt < max_retries:
                 logger.warning(
                     f"Retrying request, attempt {attempt + 1}/{max_retries}",
-                    extra={"endpoint": path, "method": method}
+                    extra={
+                        "endpoint": path, 
+                        "method": method,
+                        "attempt": attempt,
+                        "max_retries": max_retries,
+                        "retry_delay": retry_delay,
+                        "tenant_id": self._tenant_id
+                    }
                 )
                 # 指數退避
                 await asyncio.sleep(retry_delay)

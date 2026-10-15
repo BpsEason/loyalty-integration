@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import uuid
+import re
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+import copy
 
 from src.core.logging import setup_logging, get_logger
 from src.core.dependencies import laravel_client
@@ -21,9 +24,39 @@ from src.interfaces.fastapi.routers import (
     websocket_router,
 )
 
+# 模組層級編譯一次UUID正規表示式，避免每個請求重複編譯
+UUID_PATTERN = re.compile(r'^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$', re.IGNORECASE)
+MAX_REQUEST_ID_LENGTH = 64
+# 敏感欄位列表（大小寫不敏感，先移除底線和底線以外的符號，統一處理各種命名格式）
+SENSITIVE_FIELDS = {
+    'password', 'token', 'jwt', 'authorization', 'secret', 
+    'accesstoken', 'refreshtoken', 'apikey', 'api_key', 
+    'access_token', 'refresh_token', 'secret_key'
+}
+
 # 初始化日誌系統
 setup_logging()
 logger = get_logger(__name__)
+
+
+def redact_sensitive_data(data):
+    """深層清理敏感資訊，支援字典、列表和其他類型，大小寫不敏感"""
+    if isinstance(data, dict):
+        redacted = {}
+        for key, value in data.items():
+            # 檢查當前鍵是否是敏感欄位（不區分大小寫）
+            if key.lower() in SENSITIVE_FIELDS:
+                redacted[key] = '<redacted>'
+            else:
+                # 遞迴處理巢狀結構
+                redacted[key] = redact_sensitive_data(value)
+        return redacted
+    elif isinstance(data, list):
+        # 處理列表中的每個元素
+        return [redact_sensitive_data(item) for item in data]
+    else:
+        # 非字典/列表類型直接返回
+        return data
 
 
 @asynccontextmanager
@@ -64,69 +97,105 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # 添加請求ID中間件，為每個請求生成唯一的request_id並注入到請求狀態
+    @app.middleware("http")
+    async def add_request_id(request: Request, call_next):
+        # 從請求header獲取X-Request-ID，如果不存在則生成新的
+        incoming_request_id = request.headers.get("X-Request-ID")
+        # 驗證傳入的request_id格式和長度，避免信任任意外部字串
+        if incoming_request_id and (len(incoming_request_id) > MAX_REQUEST_ID_LENGTH or not UUID_PATTERN.match(incoming_request_id)):
+            # 如果格式不正確，生成新的UUID
+            request_id = str(uuid.uuid4())
+        else:
+            request_id = incoming_request_id or str(uuid.uuid4())
+            
+        # 將request_id存儲到request.state中，僅在本檔案中使用
+        request.state.request_id = request_id
+        # 在回應header中加入X-Request-ID
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = request_id
+        return response
+
     @app.exception_handler(LaravelAPIError)
     async def laravel_api_error_handler(request: Request, exc: LaravelAPIError):
         # 清理敏感資訊
         payload = exc.context.get("payload")
-        safe_payload = None
-        if payload:
-            safe_payload = payload.copy() if isinstance(payload, dict) else payload
-            if isinstance(safe_payload, dict):
-                # 移除敏感欄位
-                sensitive_fields = {'password', 'token', 'jwt', 'authorization', 'secret', 'access_token', 'refresh_token'}
-                for field in sensitive_fields:
-                    if field in safe_payload:
-                        safe_payload[field] = '<redacted>'
+        safe_payload = redact_sensitive_data(payload) if payload is not None else None
+        
+        # 從request狀態獲取request_id（僅本檔案使用）
+        request_id = getattr(request.state, 'request_id', None)
+        status_code = exc.context.get("status_code")
+        endpoint = exc.context.get("endpoint")
         
         logger.error(
             "Laravel API 呼叫失敗",
             exc_info=True,
             extra={
                 "path": request.url.path,
-                "message": exc.message,
-                "status_code": exc.status_code,
-                "endpoint": exc.context.get("endpoint"),
-                "payload": safe_payload
+                "error_message": exc.message,
+                "status_code": status_code,
+                "endpoint": endpoint,
+                "payload": safe_payload,
+                "request_id": request_id
             }
         )
-        return JSONResponse(
-            status_code=exc.status_code or 400,
+        response = JSONResponse(
+            status_code=status_code or 400,
             content={"detail": exc.message},
         )
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
+        return response
 
     @app.exception_handler(LoyaltyIntegrationError)
     async def loyalty_integration_error_handler(request: Request, exc: LoyaltyIntegrationError):
         """處理所有自訂的應用程式例外"""
+        # 從request狀態獲取request_id（僅本檔案使用）
+        request_id = getattr(request.state, 'request_id', None)
+        # 清理context中的敏感資訊
+        safe_context = redact_sensitive_data(exc.context) if exc.context is not None else None
+        
         logger.error(
             f"應用程式錯誤: {exc.message}",
             exc_info=True,
             extra={
                 "path": request.url.path,
                 "error_type": type(exc).__name__,
-                "context": exc.context
+                "context": safe_context,
+                "request_id": request_id
             }
         )
-        return JSONResponse(
+        response = JSONResponse(
             status_code=400,
             content={"detail": exc.message},
         )
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
+        return response
 
     @app.exception_handler(Exception)
     async def global_exception_handler(request: Request, exc: Exception):
         """全域例外處理器，捕獲所有未處理的例外"""
+        # 從request狀態獲取request_id（僅本檔案使用）
+        request_id = getattr(request.state, 'request_id', None)
+        
         logger.critical(
             "未處理的伺服器錯誤",
             exc_info=True,
             extra={
                 "path": request.url.path,
                 "error_type": type(exc).__name__,
-                "error_message": str(exc)
+                "error_message": str(exc),
+                "request_id": request_id
             }
         )
-        return JSONResponse(
+        response = JSONResponse(
             status_code=500,
             content={"detail": "內部伺服器錯誤"},
         )
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
+        return response
 
     # 註冊所有路由
     app.include_router(auth_router)

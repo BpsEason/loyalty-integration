@@ -73,12 +73,15 @@ class ReverbClient:
         ).hexdigest()
         return f"{self.app_key}:{hmac_signature}"
 
-    async def get_broadcasting_auth(self, channel_name: str, socket_id: str, tenant_id: int | None = None) -> str:
+    async def get_broadcasting_auth(self, channel_name: str, socket_id: str, tenant_id: int | None = None, request_client: LaravelClient | None = None) -> str:
         """
         向 Laravel /broadcasting/auth 端點請求授權，獲取合法的auth簽名
         遵循Laravel官方的broadcasting認證流程
+        優先使用request_client（當前WebSocket連線隔離的客戶端），否則退回到全局的self.laravel_client
         """
-        if not self.laravel_client or not self.laravel_client._token:
+        # 使用提供的request_client，如果沒有則使用全局的self.laravel_client
+        client = request_client or self.laravel_client
+        if not client or not client._token:
             raise Exception("LaravelClient must be authenticated before subscribing to private channels via Laravel auth")
 
         # 準備要傳送給Laravel broadcasting auth的參數
@@ -88,7 +91,7 @@ class ReverbClient:
         }
 
         # 複製LaravelClient的headers並加入X-Tenant-ID（如果有提供）
-        headers = self.laravel_client.headers.copy()
+        headers = client.headers.copy()
         # broadcasting auth需要使用form-data格式，所以覆蓋Content-Type
         headers['Content-Type'] = 'application/x-www-form-urlencoded'
         # 只要tenant_id不是None就加入X-Tenant-ID header（包括0這個合法值）
@@ -124,10 +127,11 @@ class ReverbClient:
             logger.error(f"Failed to get broadcasting auth: {e}, Response: {resp.text if 'resp' in locals() else 'N/A'}")
             raise Exception(f"Broadcasting auth failed for channel {channel_name}: {str(e)}")
 
-    async def subscribe_to_channel(self, channel_name: str, socket_id: str, tenant_id: int | None = None):
+    async def subscribe_to_channel(self, channel_name: str, socket_id: str, tenant_id: int | None = None, request_client: LaravelClient | None = None):
         """訂閱特定頻道 - 支援兩種認證方式：
         1. 如果有提供laravel_client，使用Laravel /broadcasting/auth 進行授權（生產環境使用）
         2. 如果沒有提供laravel_client，使用客戶端生成簽名的方式（向後相容性，單元測試使用）
+        優先使用request_client（當前WebSocket連線隔離的客戶端），避免修改全局狀態
         """
         if channel_name in self.subscribed_channels:
             logger.info(f"Already subscribed to {channel_name}")
@@ -137,10 +141,11 @@ class ReverbClient:
         auth = None
         if channel_name.startswith('private-'):
             # 檢查是否有laravel_client可用，如果有，使用Laravel的broadcasting auth
-            if self.laravel_client and self.laravel_client._token:
+            client = request_client or self.laravel_client
+            if client and client._token:
                 # 傳送完整的channel_name給Laravel broadcasting auth（包含private-前綴）
                 # Laravel的broadcasting auth需要完整的頻道名稱來進行認證
-                auth = await self.get_broadcasting_auth(channel_name, socket_id, tenant_id)
+                auth = await self.get_broadcasting_auth(channel_name, socket_id, tenant_id, request_client)
             else:
                 # 沒有laravel_client，使用傳統的客戶端生成簽名方式以維持向後相容性
                 auth = self.generate_auth_signature(channel_name, socket_id)

@@ -42,17 +42,51 @@ async def websocket_endpoint(
     if not token:
         return
 
-    # 設定 Laravel client 的 token 以進行驗證
-    original_token = laravel_client._token
-    laravel_client.set_token(token)
+    # 建立WebSocket專用的客戶端副本，不修改全局狀態
+    request_client = laravel_client.clone()
+    request_client.set_token(token)
+    request_client.set_tenant_id(tenant_id)
 
     try:
-        # 驗證使用者是否有權限存取這個頻道（對應 Laravel routes/channels.php 的邏輯）
+        # 驗證使用者是否有權限存取這個頻道
         try:
-            # 先驗證 token 有效性
-            await laravel_client.me()
+            # 先驗證 token 有效性，取得目前使用者資訊
+            user_info = await request_client.me()
+            logger.debug("取得使用者資訊", extra={"user_info": user_info, "request_tenant": tenant_id, "request_member": member_id})
+            
+            # 第一層驗證：驗證使用者屬於正確的租戶
+            # 從使用者資訊中提取租戶資訊，這裡假設user_info中有tenant_id欄位
+            # 如果Laravel回傳的使用者資訊格式不同，可能需要調整這裡的欄位名稱
+            user_tenant_id = user_info.get('tenant_id')
+            if user_tenant_id is not None and str(user_tenant_id) != str(tenant_id):
+                logger.warning("WebSocket跨租戶存取嘗試被阻止", 
+                             extra={"user_tenant": user_tenant_id, "request_tenant": tenant_id, "member_id": member_id})
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+                
+            # 第二層驗證：驗證使用者確實有權存取這個會員的頻道
+            # 檢查是否是使用者本人，或者使用者有權限存取其他會員的資料
+            user_id = user_info.get('id')
+            # 這裡可以根據業務需求調整授權邏輯：
+            # - 使用者只能存取自己的member_id對應的頻道
+            # - 或者管理員可以存取所有會員的頻道
+            is_authorized = False
+            # 情況1：使用者存取自己的頻道
+            if str(user_id) == str(member_id):
+                is_authorized = True
+            # 情況2：如果是管理員，可以存取所有頻道（可以根據roles或permissions判斷）
+            elif user_info.get('is_admin') or user_info.get('role') == 'admin':
+                is_authorized = True
+            # 可以在此加入其他授權條件...
+            
+            if not is_authorized:
+                logger.warning("WebSocket未授權的會員頻道存取嘗試被阻止", 
+                             extra={"user_id": user_id, "request_member": member_id, "tenant_id": tenant_id})
+                await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+                return
+                
         except Exception as e:
-            logger.warning("WebSocket連線使用了無效的token", exc_info=True, extra={"tenant_id": tenant_id, "member_id": member_id})
+            logger.warning("WebSocket連線驗證失敗", exc_info=True, extra={"tenant_id": tenant_id, "member_id": member_id})
             await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
             return
 
@@ -76,8 +110,8 @@ async def websocket_endpoint(
             await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
             return
 
-        # 訂閱頻道
-        await reverb_client.subscribe_to_channel(channel_name, reverb_client.socket_id)
+        # 訂閱頻道 - 傳遞tenant_id以進行租戶隔離驗證，使用隔離的請求客戶端
+        await reverb_client.subscribe_to_channel(channel_name, reverb_client.socket_id, tenant_id, request_client)
 
         # 將前端連線加入頻道的連線列表
         reverb_client.add_frontend_connection(channel_name, websocket)
@@ -97,7 +131,9 @@ async def websocket_endpoint(
         except WebSocketDisconnect:
             logger.info("前端WebSocket連線中斷", extra={"tenant_id": tenant_id, "member_id": member_id})
             reverb_client.remove_frontend_connection(channel_name, websocket)
-
-    finally:
-        # 恢復原本的 token
-        laravel_client.set_token(original_token)
+    except Exception as e:
+        logger.error("WebSocket連線發生未預期的錯誤", exc_info=True, extra={"tenant_id": tenant_id, "member_id": member_id})
+        try:
+            await websocket.close(code=status.WS_1011_INTERNAL_ERROR)
+        except:
+            pass

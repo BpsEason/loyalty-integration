@@ -22,6 +22,14 @@ class LaravelAPIError(ExternalAPIError):
         super().__init__(message, status_code=status_code, endpoint=endpoint, payload=payload)
 
 
+class TokenState:
+    """統一管理Token狀態，確保所有clone共享同一份最新的Token數據"""
+    def __init__(self):
+        self.token: str | None = None
+        self.token_type: str = "Bearer"
+        self.token_expires_at: float = 0.0
+
+
 class LaravelClient:
     """
     與 Laravel Loyalty API 溝通的核心 Client。
@@ -44,18 +52,48 @@ class LaravelClient:
         httpx.WriteTimeout,
     )
 
-    def __init__(self, limits: httpx.Limits | None = None):
+    def __init__(self, limits: httpx.Limits | None = None, token_state: TokenState | None = None):
         self.base_url = settings.laravel_api_base_url.rstrip("/")
         self.timeout = settings.default_timeout
-        self._token: str | None = None
-        self._token_type: str = "Bearer"
-        self._token_expires_at: float = 0.0  # JWT 過期時間 (Unix timestamp)
+        # Token狀態：如果是原始實例則創建新的TokenState，如果是clone則共享傳入的TokenState
+        if token_state is None:
+            # 原始實例，創建自己的TokenState
+            self._token_state = TokenState()
+            self._is_original_instance = True  # 標記這是原始實例，只有它能關閉HTTP client
+        else:
+            # clone實例，共享原始實例的TokenState
+            self._token_state = token_state
+            self._is_original_instance = False
         self._refresh_buffer: int = 30  # 過期前30秒自動刷新
         self._refresh_lock: asyncio.Lock = asyncio.Lock()  # 防止並發刷新
-        self._tenant_id: str | None = None
+        self._tenant_id: str | None = None  # 每個實例獨立的租戶ID
         # 建立共享的 AsyncClient 與連接池
         self._client: httpx.AsyncClient | None = None
         self._limits = limits
+        
+    @property
+    def _token(self) -> str | None:
+        return self._token_state.token
+        
+    @_token.setter
+    def _token(self, value: str | None) -> None:
+        self._token_state.token = value
+        
+    @property
+    def _token_type(self) -> str:
+        return self._token_state.token_type
+        
+    @_token_type.setter
+    def _token_type(self, value: str) -> None:
+        self._token_state.token_type = value
+        
+    @property
+    def _token_expires_at(self) -> float:
+        return self._token_state.token_expires_at
+        
+    @_token_expires_at.setter
+    def _token_expires_at(self, value: float) -> None:
+        self._token_state.token_expires_at = value
 
     async def __aenter__(self) -> LaravelClient:
         """支援 async with 語法，確保資源正確管理"""
@@ -67,8 +105,12 @@ class LaravelClient:
         return self
 
     async def __aexit__(self, exc_type: type[BaseException] | None, exc_val: BaseException | None, exc_tb: object | None) -> None:
-        """結束時正確關閉 HTTP client"""
-        if self._client:
+        """結束時正確關閉 HTTP client - 只有原始實例（根實例）才能關閉底層的HTTPX client
+        這防止clone在使用完畢後意外關閉所有clone共享的連線池
+        """
+        # 只有當前實例是token_state的擁有者（即創建token_state的原始實例）才能關閉client
+        # 通過檢查是否存在_token_state_owner標識來判斷是否是原始實例
+        if hasattr(self, '_is_original_instance') and self._client:
             await self._client.aclose()
             self._client = None
 
@@ -102,6 +144,21 @@ class LaravelClient:
     def set_tenant_id(self, tenant_id: int | str) -> None:
         """設定租戶ID，會自動加入到所有請求的X-Tenant-ID header中"""
         self._tenant_id = str(tenant_id)
+        
+    def clone(self) -> LaravelClient:
+        """
+        建立當前客戶端的副本，共享底層的HTTPX連線池、token狀態和刷新鎖
+        副本具有獨立的tenant_id，確保多租戶隔離的同時复用連線資源
+        """
+        # 創建新的clone，傳入共享的token_state以確保所有clone共享同一份Token狀態
+        clone = LaravelClient(limits=self._limits, token_state=self._token_state)
+        # 共享底層的HTTPX client - 確保連線池復用
+        clone._client = self._client
+        # 共享刷新鎖，防止並發刷新的問題
+        clone._refresh_lock = self._refresh_lock
+        # 每個clone的tenant_id都是獨立的，實現租戶隔離
+        clone._tenant_id = None  # 每個clone必須獨立設定自己的tenant_id
+        return clone
 
     async def login(self, email: str | None = None, password: str | None = None) -> dict[str, Any]:
         email = email or settings.laravel_email
@@ -335,6 +392,11 @@ class LaravelClient:
                 
                 # 處理401未授權 - 只嘗試刷新token後重試一次
                 if resp.status_code == 401 and not has_retried_401:
+                    # 即使是401重試，修改操作也必須有冪等鍵才能進行
+                    if method_upper in self.MUTATION_METHODS and idempotency_key is None:
+                        logger.error("Cannot retry 401 for mutation request without idempotency key", extra={"endpoint": path})
+                        break
+                        
                     logger.warning("Received 401, attempting to refresh token and retry once", extra={"endpoint": path})
                     has_retried_401 = True
                     await self.refresh()

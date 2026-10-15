@@ -1,5 +1,5 @@
 from typing import Optional
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, HTTPException, Depends
 from src.core.dependencies import laravel_client
 from src.infrastructure.clients.point import PointClient
 from src.interfaces.fastapi.schemas.point import RedeemRequest, EarnRequest, PointTransactionRequest
@@ -7,9 +7,22 @@ from src.interfaces.fastapi.schemas.point import RedeemRequest, EarnRequest, Poi
 router = APIRouter(tags=["points"])
 
 
+def get_tenant_id(x_tenant_id: Optional[str] = Header(None)) -> str:
+    """從請求header中提取並驗證租戶ID"""
+    if not x_tenant_id:
+        raise HTTPException(status_code=400, detail="X-Tenant-ID header is required")
+    return x_tenant_id
+
+
 @router.get("/customers/{customer_id}/points")
-async def get_balance(customer_id: int):
-    client = PointClient(laravel_client)
+async def get_balance(
+    customer_id: int,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    # 克隆全局客戶端以隔離租戶上下文，共享底層HTTPX連線池
+    request_client = laravel_client.clone()
+    request_client.set_tenant_id(tenant_id)
+    client = PointClient(request_client)
     return await client.get_balance(customer_id)
 
 
@@ -18,8 +31,12 @@ async def list_point_transactions(
     customer_id: int,
     per_page: int = 15,
     type: str | None = None,
+    tenant_id: str = Depends(get_tenant_id)
 ):
-    client = PointClient(laravel_client)
+    # 克隆全局客戶端以隔離租戶上下文，共享底層HTTPX連線池
+    request_client = laravel_client.clone()
+    request_client.set_tenant_id(tenant_id)
+    client = PointClient(request_client)
     return await client.list_transactions(
         customer_id, per_page=per_page, transaction_type=type
     )
@@ -30,12 +47,16 @@ async def create_point_transaction(
     customer_id: int,
     body: PointTransactionRequest,
     idempotency_key: Optional[str] = Header(None, alias="Idempotency-Key"),
+    tenant_id: str = Depends(get_tenant_id)
 ):
-    client = PointClient(laravel_client)
+    # 克隆全局客戶端以隔離租戶上下文，共享底層HTTPX連線池
+    request_client = laravel_client.clone()
+    request_client.set_tenant_id(tenant_id)
+    client = PointClient(request_client)
     # 呼叫端未提供 Idempotency-Key 時，由 Integration Layer
     # 為這一次 request 產生新的 key。此 key 不會跨 request 持久化，
     # 因此無法提供跨重試的 Workflow-level Idempotency；需要安全重試時，呼叫端應提供穩定的 key。
-    key = idempotency_key or laravel_client.generate_idempotency_key(prefix="transaction")
+    key = idempotency_key or request_client.generate_idempotency_key(prefix="transaction")
     return await client.create_transaction(
         customer_id=customer_id,
         transaction_type=body.type,
@@ -47,14 +68,28 @@ async def create_point_transaction(
 
 
 @router.get("/customers/{customer_id}/point-transactions/expiring")
-async def get_expiring_transactions(customer_id: int, days: int = 30):
-    client = PointClient(laravel_client)
+async def get_expiring_transactions(
+    customer_id: int, 
+    days: int = 30,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    # 克隆全局客戶端以隔離租戶上下文，共享底層HTTPX連線池
+    request_client = laravel_client.clone()
+    request_client.set_tenant_id(tenant_id)
+    client = PointClient(request_client)
     return await client.get_expiring(customer_id, days=days)
 
 
 @router.get("/customers/{customer_id}/point-transactions/{transaction_id}")
-async def get_point_transaction(customer_id: int, transaction_id: int):
-    client = PointClient(laravel_client)
+async def get_point_transaction(
+    customer_id: int, 
+    transaction_id: int,
+    tenant_id: str = Depends(get_tenant_id)
+):
+    # 克隆全局客戶端以隔離租戶上下文，共享底層HTTPX連線池
+    request_client = laravel_client.clone()
+    request_client.set_tenant_id(tenant_id)
+    client = PointClient(request_client)
     return await client.get_transaction(customer_id, transaction_id)
 
 

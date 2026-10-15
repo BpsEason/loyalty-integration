@@ -39,12 +39,18 @@ class POSCheckoutWorkflow:
         earn_amount: int = 100,
         redeem_amount: int = 30,
         order_reference: str | None = None,
+        workflow_idempotency_prefix: str | None = None,
     ) -> dict:
         order_reference = order_reference or self.client.generate_idempotency_key(prefix="pos-order")
+        
+        # 如果提供了工作流程級別的冪等前綴，確保每個步驟使用基於同一前綴的冪等鍵
+        # 這樣即使工作流程重試，相同的步驟仍會使用相同的Idempotency-Key
+        base_prefix = workflow_idempotency_prefix or order_reference
         
         workflow_context = {
             "customer_id": customer_id,
             "order_reference": order_reference,
+            "workflow_idempotency_prefix": base_prefix,
             "earn_amount": earn_amount,
             "redeem_amount": redeem_amount
         }
@@ -53,6 +59,7 @@ class POSCheckoutWorkflow:
         console.print("\n[bold blue]========== POS 結帳流程開始 ==========[/bold blue]")
         console.print(f"會員 ID      : {customer_id}")
         console.print(f"訂單參考號  : {order_reference}")
+        console.print(f"工作流程冪等前綴: {base_prefix}")
         console.print(f"本次發點    : {earn_amount}")
         console.print(f"本次兌換    : {redeem_amount}")
         
@@ -85,7 +92,8 @@ class POSCheckoutWorkflow:
 
             # 3. 消費發點（earn）
             console.print("\n[bold]3. 消費發點 (earn)[/bold]")
-            earn_key = self.client.generate_idempotency_key(prefix="earn")
+            # 使用穩定的基於工作流程前綴的冪等鍵，確保重試時使用相同的key
+            earn_key = f"{base_prefix}-earn"
             earn_result = await self.point_client.create_transaction(
                 customer_id=customer_id,
                 transaction_type="earn",
@@ -104,7 +112,8 @@ class POSCheckoutWorkflow:
 
             # 4. 兌換點數（redeem）
             console.print("\n[bold]4. 兌換點數 (redeem)[/bold]")
-            redeem_key = self.client.generate_idempotency_key(prefix="redeem")
+            # 使用穩定的基於工作流程前綴的冪等鍵，確保重試時使用相同的key
+            redeem_key = f"{base_prefix}-redeem"
             redeem_result = await self.point_client.redeem(
                 customer_id=customer_id,
                 amount=redeem_amount,
